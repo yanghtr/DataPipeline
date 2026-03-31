@@ -23,7 +23,8 @@
       "Bash(python -c \"import matplotlib; print\\(matplotlib.__version__\\)\" 2)",
       "Bash(1 python:*)",
       "Bash(pip install:*)",
-      "Bash(python -m seed_selection.main --config seed_selection/configs/default.yaml analyze)"
+      "Bash(python -m seed_selection.main --config seed_selection/configs/default.yaml analyze)",
+      "Bash(python:*)"
     ]
   }
 }

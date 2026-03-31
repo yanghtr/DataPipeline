@@ -35,7 +35,7 @@ canonical JSONL (7.7M)
 
 ### near dedup 两阶段算法
 
-MinHash LSH 去重在算法上分为两个性质截然不同的阶段：
+MinHash LSH 去重分为两个性质不同的阶段：
 
 ```
 Phase 1（并行）：计算 MinHash signature
@@ -43,25 +43,26 @@ Phase 1（并行）：计算 MinHash signature
   → 输出 hashvalues (uint64 × 128) 序列化为 bytes
   → 拆成 num_workers 个 chunk，ProcessPoolExecutor 并行执行
 
-Phase 2（顺序，必须）：增量 LSH 去重
-  for 每条记录 (按原始顺序):
-      从 bytes 重建 MinHash 对象
-      if LSH.query(minhash) 返回空:     # 无近似重复
-          LSH.insert(key, minhash)
-          保留此记录
+Phase 2（顺序，必须）：增量 band hash 去重
+  将全部 hashvalues bytes 拼成 (N, 128) numpy 矩阵
+  for 每条记录 i（按原始顺序）:
+      直接从矩阵计算 9 个 band hash key（byteswap + tobytes）
+      if 任一 band hash 已在对应桶中:
+          丢弃
       else:
-          丢弃（已有近似重复）
+          将 9 个 band hash 插入各自桶
+          保留此记录
 ```
 
-**Phase 1 是瓶颈**：以 stage1_icon（2.8M 条，平均 79 字符）为例：
-`2.8M × ~75 n-gram × 128 perm ≈ 270 亿次 pure-Python hash`，这是旧版跑 1.5h+ 的原因。
-`num_workers=4` 可将 Phase 1 缩短至约 1/4。
+**Phase 2 性能关键**：旧版在 Phase 2 中每条记录都构造一次 `MinHash` 对象（~335μs/次），2.8M 条需 19 分钟。新版直接在 numpy 矩阵上计算 band hash，完全绕过对象构造，速度 **150K rec/s**，2.8M 条仅需 **~19 秒**（62× 加速）。
 
-**Phase 2 必须顺序**：LSH 的 query 需要能看见所有已插入的记录，若并行则不同 chunk 之间的近似重复无法被检测到。
+**Phase 2 必须顺序**：判断记录 i 是否重复，需要查询前 i-1 条已插入的记录，有状态依赖，无法并行。
 
-**结果确定性**：Phase 1 对每条文本的计算与 worker 分配无关，Phase 2 始终顺序执行，因此 **任意 `num_workers` 值的输出完全一致**。
+**num_workers 只影响 Phase 1**：`num_workers` 增大只加速 MinHash 计算（Phase 1），对 Phase 2 无影响。Phase 1 在总耗时中的占比与 `num_workers` 成反比——`num_workers` 足够大后，Phase 2 成为新的顺序瓶颈（约 19 秒，无法进一步缩短）。
 
-**num_workers 上限**：物理 CPU 核数。超过核数无额外收益，建议设为核数的 50–75%。
+**结果确定性**：Phase 1 对每条文本的计算结果与 worker 分配无关，Phase 2 始终顺序执行。**任意 `num_workers` 值的输出完全一致**。
+
+**num_workers 推荐值**：物理核数的 50–75%。超过核数无额外收益；设太大反而增加进程启动和 IPC 开销。
 
 ### 三桶策略
 
@@ -308,7 +309,7 @@ sampling:
 | extract | 7.7M 条 | ~10 分钟 | ~3 分钟 |
 | clean | ~7.7M | ~3 分钟 | ~3 分钟（无并行）|
 | dedup_exact | ~7.7M | ~5 分钟 | ~5 分钟（无并行）|
-| dedup_near | ~4M | ~90–120 分钟 | **~25–40 分钟** |
+| dedup_near | ~4M | ~80–100 分钟 | **~2–5 分钟**（主要是 Phase 1）|
 | svg_filter | ~4M | ~3 分钟 | ~3 分钟（无并行）|
 | embed | ~3M | **18–22 小时**（CPU）| 1–2 小时（GPU ×1）/ ~15 分钟（NPU ×8）|
 | cluster | ~3M | ~30 分钟 | ~12 分钟 |

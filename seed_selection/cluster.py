@@ -31,6 +31,25 @@ from .embed import load_all_embeddings
 from .io_utils import DOMAINS, read_jsonl, update_meta
 
 
+def _limit_blas_threads() -> None:
+    """
+    限制 BLAS/OpenMP 线程数为 1，防止在多进程环境下 OpenBLAS 尝试创建
+    超过编译上限的线程（在 192 核等大机器上会触发 double free / BrokenProcessPool）。
+
+    必须在任何 numpy/sklearn 调用之前设置环境变量；同时通过 threadpoolctl
+    在运行时再次限制（scikit-learn 依赖，必然已安装）。
+    """
+    import os
+    for var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[var] = "1"
+    try:
+        from threadpoolctl import threadpool_limits
+        threadpool_limits(limits=1)
+    except ImportError:
+        pass
+
+
 @dataclass
 class ClusterStats:
     cluster_counts: dict[str, int] = field(default_factory=dict)     # domain → K
@@ -73,6 +92,8 @@ def _cluster_domain_worker(args: tuple) -> tuple[str, int, int]:
     Worker 函数：对单个 domain 运行 KMeans，写出带 cluster 字段的临时 JSONL。
     返回: (domain, n_records, actual_k)
     """
+    _limit_blas_threads()   # 防止 OpenBLAS 在大机器上超过编译线程上限
+
     domain, records_json, emb_bytes, emb_shape, k, random_seed, minibatch_size, tmp_path_str = args
 
     records = [json.loads(r) for r in records_json]
@@ -164,7 +185,10 @@ def run_cluster(
 
         if num_workers > 1 and len(worker_args) > 1:
             futures = {}
-            with ProcessPoolExecutor(max_workers=min(num_workers, len(worker_args))) as exe:
+            with ProcessPoolExecutor(
+                max_workers=min(num_workers, len(worker_args)),
+                initializer=_limit_blas_threads,  # 防止 OpenBLAS 超线程上限崩溃
+            ) as exe:
                 for arg in worker_args:
                     futures[arg[0]] = exe.submit(_cluster_domain_worker, arg)
             results = {dom: fut.result() for dom, fut in futures.items()}
