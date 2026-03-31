@@ -15,12 +15,15 @@ output_root: /home/yanghaitao/Projects/Data/query_seed/SAgoge
 # SVG 复杂度过滤：去除 stage1_icon / stage2_icon 中 svg_len 最小的 N%（illustration 全保留）
 svg_filter_bottom_pct: 0.10
 
+num_workers: 4             # extract / dedup_near / cluster 并行进程数
+
 embedding:
   model_path: /home/yanghaitao/Projects/CKPT/Qwen3-Embedding-0.6B
   dimension: 256
   batch_size: 16           # CPU 默认；GPU 建议 256
   device: cpu              # cpu | cuda | npu
   shard_size: 100000       # 每个 shard 的样本数
+  num_devices: 1           # GPU/NPU 卡数（CPU 模式固定为 1；8 卡 NPU 设为 8）
 
 near_dedup:
   num_perm: 128            # MinHash 排列数（影响精度与速度）

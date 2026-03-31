@@ -126,7 +126,8 @@ def run_sample(
     bucket_records: dict[str, list[dict]] = defaultdict(list)
     for rec in read_jsonl(input_path):
         stats.total_input += 1
-        bucket_records[rec.get("bucket_key", rec.get("domain", "stage1_icon"))].append(rec)
+        meta = rec.get("_meta", {})
+        bucket_records[meta.get("bucket_key", meta.get("domain", "stage1_icon"))].append(rec)
 
     # 2. 按 bucket 比例分配 1000k quota
     bucket_sizes = {k: len(v) for k, v in bucket_records.items()}
@@ -145,7 +146,7 @@ def run_sample(
         # 按 cluster 分组
         cluster_groups: dict[int, list[dict]] = defaultdict(list)
         for rec in records:
-            cluster_groups[rec.get("cluster_id", 0)].append(rec)
+            cluster_groups[rec.get("_meta", {}).get("cluster_id", 0)].append(rec)
 
         cluster_sizes = {cid: len(recs) for cid, recs in cluster_groups.items()}
         cluster_budgets = _allocate_cluster_budget(cluster_sizes, quota)
@@ -153,7 +154,7 @@ def run_sample(
         for cid, recs in cluster_groups.items():
             budget = min(cluster_budgets.get(cid, 1), len(recs))
             # 按 distance_to_centroid 升序，取前 budget 条
-            sorted_recs = sorted(recs, key=lambda r: r.get("distance_to_centroid", 0))
+            sorted_recs = sorted(recs, key=lambda r: r.get("_meta", {}).get("distance_to_centroid", 0))
             pool_records.extend(sorted_recs[:budget])
 
     # 稳定打乱（不影响 downstream reproducibility）
@@ -171,9 +172,10 @@ def run_sample(
     hp_records: list[dict] = []
 
     # 先按 distance 排序所有 pool 记录
-    sorted_pool = sorted(pool_records, key=lambda r: r.get("distance_to_centroid", 0))
+    sorted_pool = sorted(pool_records, key=lambda r: r.get("_meta", {}).get("distance_to_centroid", 0))
     for rec in sorted_pool:
-        key = (rec.get("bucket_key", ""), rec.get("cluster_id", 0))
+        meta = rec.get("_meta", {})
+        key = (meta.get("bucket_key", ""), meta.get("cluster_id", 0))
         if key not in seen_cluster:
             seen_cluster.add(key)
             hp_records.append(rec)
@@ -182,11 +184,11 @@ def run_sample(
 
     # 如果 cluster 数不足 high_priority_size，按 distance 补充（不重复）
     if len(hp_records) < high_priority_size:
-        hp_ids = {r["id"] for r in hp_records}
+        hp_ids = {r["_meta"]["id"] for r in hp_records}
         for rec in sorted_pool:
-            if rec["id"] not in hp_ids:
+            if rec["_meta"]["id"] not in hp_ids:
                 hp_records.append(rec)
-                hp_ids.add(rec["id"])
+                hp_ids.add(rec["_meta"]["id"])
             if len(hp_records) >= high_priority_size:
                 break
 
@@ -197,11 +199,11 @@ def run_sample(
     stats.high_priority = len(hp_records)
 
     # 6. anneal = pool_1000k - high_priority
-    hp_ids_set = {r["id"] for r in hp_records}
+    hp_ids_set = {r["_meta"]["id"] for r in hp_records}
     anneal_path = output_dir / "anneal_pool.jsonl"
     with anneal_path.open("w", encoding="utf-8") as f:
         for rec in pool_records:
-            if rec["id"] not in hp_ids_set:
+            if rec["_meta"]["id"] not in hp_ids_set:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 stats.anneal += 1
 

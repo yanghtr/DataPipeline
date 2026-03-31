@@ -48,7 +48,7 @@ def run_dedup_exact(input_path: Path, output_path: Path) -> ExactDedupStats:
     for rec in read_jsonl(input_path):
         stats.total += 1
         instr = rec.get("instruction", "")
-        priority = SOURCE_PRIORITY.get(rec.get("source", "text2svg"), 1)
+        priority = SOURCE_PRIORITY.get(rec.get("_meta", {}).get("source", "text2svg"), 1)
 
         if instr not in seen:
             seen[instr] = (priority, rec)

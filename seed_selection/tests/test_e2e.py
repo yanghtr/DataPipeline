@@ -76,11 +76,15 @@ def test_full_pipeline(tmp_path, all_input_paths):
     assert (root / "anneal_pool.jsonl").exists()
     assert (root / "high_priority_pool.jsonl").exists()
 
-    # Verify field presence in final outputs
+    # Verify _meta structure in final outputs
     for line in (root / "anneal_pool.jsonl").read_text().splitlines():
         if not line.strip():
             continue
         rec = json.loads(line)
-        assert "id" in rec
         assert "instruction" in rec
-        assert "cluster_id" in rec
+        assert "_meta" in rec
+        meta = rec["_meta"]
+        assert "id" in meta
+        assert "cluster_id" in meta
+        assert "distance_to_centroid" in meta
+        assert "bucket_key" in meta

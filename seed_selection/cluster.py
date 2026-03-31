@@ -15,7 +15,10 @@ Step 7 — cluster.py
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -25,7 +28,7 @@ from loguru import logger
 from sklearn.cluster import MiniBatchKMeans
 
 from .embed import load_all_embeddings
-from .io_utils import DOMAINS, read_jsonl
+from .io_utils import DOMAINS, read_jsonl, update_meta
 
 
 @dataclass
@@ -65,6 +68,35 @@ def _run_kmeans(
     return labels, centroids
 
 
+def _cluster_domain_worker(args: tuple) -> tuple[str, int, int]:
+    """
+    Worker 函数：对单个 domain 运行 KMeans，写出带 cluster 字段的临时 JSONL。
+    返回: (domain, n_records, actual_k)
+    """
+    domain, records_json, emb_bytes, emb_shape, k, random_seed, minibatch_size, tmp_path_str = args
+
+    records = [json.loads(r) for r in records_json]
+    emb_matrix = np.frombuffer(emb_bytes, dtype=np.float32).reshape(emb_shape)
+
+    labels, centroids = _run_kmeans(emb_matrix, k, random_seed, minibatch_size)
+    actual_k = int(labels.max()) + 1
+    cluster_sizes = Counter(labels.tolist())
+
+    with open(tmp_path_str, "w", encoding="utf-8") as fout:
+        for rec, label, emb in zip(records, labels, emb_matrix):
+            centroid = centroids[label]
+            dist = float(np.linalg.norm(emb - centroid))
+            update_meta(rec,
+                cluster_id=int(label),
+                cluster_size=cluster_sizes[int(label)],
+                distance_to_centroid=round(dist, 6),
+                bucket_key=domain,
+            )
+            fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    return domain, len(records), actual_k
+
+
 def run_cluster(
     meta_path: Path,
     embed_dir: Path,
@@ -72,6 +104,7 @@ def run_cluster(
     k_per_bucket: dict[str, int],
     random_seed: int = 42,
     minibatch_size: int = 50_000,
+    num_workers: int = 1,
 ) -> ClusterStats:
     stats = ClusterStats()
 
@@ -84,12 +117,17 @@ def run_cluster(
     # 2. 读取元数据，按 domain 分组
     domain_records: dict[str, list[dict]] = {d: [] for d in DOMAINS}
     for rec in read_jsonl(meta_path):
-        domain = rec.get("domain", "stage1_icon")
+        domain = rec.get("_meta", {}).get("domain", "stage1_icon")
         domain_records.setdefault(domain, []).append(rec)
 
     # 3. 对每个 domain 单独聚类，写出结果
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as fout:
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # 准备 worker 参数（预先收集 embeddings，避免在 worker 中重复加载）
+        worker_args = []
+        domain_order: list[str] = []
+
         for domain, records in domain_records.items():
             if not records:
                 continue
@@ -97,11 +135,10 @@ def run_cluster(
             stats.record_counts[domain] = len(records)
             logger.info(f"[cluster] {domain}: {len(records):,} 条 → K={k}")
 
-            # 收集该 domain 的 embedding
             valid_records, valid_embs = [], []
             missing = 0
             for rec in records:
-                idx = id_to_idx.get(rec["id"])
+                idx = id_to_idx.get(rec.get("_meta", {}).get("id", ""))
                 if idx is None:
                     missing += 1
                     continue
@@ -110,27 +147,44 @@ def run_cluster(
 
             if missing:
                 logger.warning(f"[cluster] {domain}: {missing} 条在 embedding 中找不到 ID")
-
             if not valid_records:
                 continue
 
             emb_matrix = np.vstack(valid_embs)
-            labels, centroids = _run_kmeans(emb_matrix, k, random_seed, minibatch_size)
+            tmp_path = os.path.join(tmp_dir, f"cluster_{domain}.jsonl")
+            worker_args.append((
+                domain,
+                [json.dumps(r, ensure_ascii=False) for r in valid_records],
+                emb_matrix.tobytes(),
+                emb_matrix.shape,
+                k, random_seed, minibatch_size,
+                tmp_path,
+            ))
+            domain_order.append(domain)
 
-            actual_k = int(labels.max()) + 1
-            stats.cluster_counts[domain] = actual_k
+        if num_workers > 1 and len(worker_args) > 1:
+            futures = {}
+            with ProcessPoolExecutor(max_workers=min(num_workers, len(worker_args))) as exe:
+                for arg in worker_args:
+                    futures[arg[0]] = exe.submit(_cluster_domain_worker, arg)
+            results = {dom: fut.result() for dom, fut in futures.items()}
+        else:
+            results = {}
+            for arg in worker_args:
+                r = _cluster_domain_worker(arg)
+                results[r[0]] = r
 
-            # 计算 cluster_size
-            cluster_sizes = Counter(labels.tolist())
-
-            for rec, label, emb in zip(valid_records, labels, valid_embs):
-                centroid = centroids[label]
-                dist = float(np.linalg.norm(emb - centroid))
-                rec["cluster_id"] = int(label)
-                rec["cluster_size"] = cluster_sizes[int(label)]
-                rec["distance_to_centroid"] = round(dist, 6)
-                rec["bucket_key"] = domain
-                fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        # 按顺序 merge 输出
+        with output_path.open("w", encoding="utf-8") as fout:
+            for domain in domain_order:
+                if domain not in results:
+                    continue
+                dom, n_records, actual_k = results[domain]
+                stats.cluster_counts[domain] = actual_k
+                tmp_path = os.path.join(tmp_dir, f"cluster_{domain}.jsonl")
+                if os.path.exists(tmp_path):
+                    with open(tmp_path, encoding="utf-8") as fin:
+                        fout.write(fin.read())
 
     logger.info(stats.report())
     return stats

@@ -15,7 +15,15 @@
       "Bash(while read:*)",
       "Bash(do wc:*)",
       "Bash(done)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(/home/yanghaitao/Projects/DataPipeline/seed_selection/tests/test_svg_filter.py:*)",
+      "Bash(python -m pytest seed_selection/tests/ -q)",
+      "Bash(rm -rf /home/yanghaitao/Projects/Data/query_seed/SAgoge)",
+      "Bash(python -m seed_selection.main --config seed_selection/configs/default.yaml run --dry-run --dry-run-n 500)",
+      "Bash(python -c \"import matplotlib; print\\(matplotlib.__version__\\)\" 2)",
+      "Bash(1 python:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m seed_selection.main --config seed_selection/configs/default.yaml analyze)"
     ]
   }
 }

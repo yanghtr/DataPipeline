@@ -17,6 +17,7 @@ CPU 时间参考（Qwen3-Embedding-0.6B）：
 from __future__ import annotations
 
 import json
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -47,63 +48,39 @@ def _embed_batch(model, texts: list[str], dimension: int) -> np.ndarray:
     return embs
 
 
-def run_embed(
-    input_path: Path,
-    output_dir: Path,
-    model_path: str,
-    dimension: int = 256,
-    batch_size: int = 16,
-    device: str = "cpu",
-    shard_size: int = 100_000,
-    dry_run: bool = False,
-) -> dict[str, int]:
+def _embed_shards_on_device(args: tuple) -> tuple[int, int]:
     """
-    返回 {"total_records": N, "shards_written": M, "shards_skipped": K}。
+    Worker 函数：在指定设备上处理分配给该 worker 的 shard 列表。
+    返回: (shards_written, shards_skipped)
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    (shard_indices, output_dir_str, ids_list, texts_list, shard_size,
+     model_path, dimension, batch_size, device_str, dry_run) = args
 
-    # 读取所有 id 和 instruction（只保留这两个字段，节省内存）
-    logger.info(f"[embed] 读取 {input_path.name} ...")
-    ids, texts = [], []
-    for rec in read_jsonl(input_path):
-        ids.append(rec["id"])
-        texts.append(rec["instruction"])
+    output_dir = Path(output_dir_str)
+    written = skipped = 0
 
-    total = len(ids)
-    n_shards = (total + shard_size - 1) // shard_size
-    logger.info(f"[embed] 共 {total:,} 条，分 {n_shards} 个 shard（shard_size={shard_size:,}）")
+    if not dry_run:
+        model = _load_model(model_path, device_str)
+    else:
+        model = None
 
-    if dry_run:
-        logger.warning("[embed] dry_run=True，使用零向量，不加载模型")
-
-    model = None if dry_run else _load_model(model_path, device)
-
-    shards_written = 0
-    shards_skipped = 0
-
-    for shard_idx in range(n_shards):
+    for shard_idx in shard_indices:
         shard_path = output_dir / f"shard_{shard_idx:04d}.npz"
         start = shard_idx * shard_size
-        end = min(start + shard_size, total)
+        # ids_list and texts_list are already the shard-specific slices
+        shard_ids = ids_list[shard_idx]
+        shard_texts = texts_list[shard_idx]
+        n = len(shard_ids)
 
         if shard_path.exists() and shard_path.stat().st_size > 0:
-            logger.info(f"[embed] shard {shard_idx:04d} 已存在，跳过")
-            shards_skipped += 1
+            skipped += 1
             continue
-
-        shard_ids = ids[start:end]
-        shard_texts = texts[start:end]
-        n = len(shard_ids)
 
         if dry_run:
             embs = np.zeros((n, dimension), dtype=np.float32)
         else:
             all_embs = []
-            for i in tqdm(
-                range(0, n, batch_size),
-                desc=f"shard {shard_idx:04d}",
-                unit="batch",
-            ):
+            for i in tqdm(range(0, n, batch_size), desc=f"shard {shard_idx:04d}", unit="batch"):
                 batch = shard_texts[i : i + batch_size]
                 all_embs.append(_embed_batch(model, batch, dimension))
             embs = np.vstack(all_embs)
@@ -113,10 +90,92 @@ def run_embed(
             ids=np.array(shard_ids, dtype=object),
             embeddings=embs,
         )
-        shards_written += 1
-        logger.info(
-            f"[embed] shard {shard_idx:04d} 写出: {n} 条 → {shard_path.name}"
-        )
+        written += 1
+
+    return written, skipped
+
+
+def run_embed(
+    input_path: Path,
+    output_dir: Path,
+    model_path: str,
+    dimension: int = 256,
+    batch_size: int = 16,
+    device: str = "cpu",
+    shard_size: int = 100_000,
+    dry_run: bool = False,
+    num_devices: int = 1,
+) -> dict[str, int]:
+    """
+    返回 {"total_records": N, "shards_written": M, "shards_skipped": K}。
+
+    num_devices > 1 时，shard 均分到各卡（设备命名：{device}:0, {device}:1, ...）。
+    CPU 模式固定为单进程（num_devices 被忽略）。
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 读取所有 id 和 instruction
+    logger.info(f"[embed] 读取 {input_path.name} ...")
+    ids, texts = [], []
+    for rec in read_jsonl(input_path):
+        ids.append(rec["_meta"]["id"])
+        texts.append(rec["instruction"])
+
+    total = len(ids)
+    n_shards = (total + shard_size - 1) // shard_size
+    logger.info(f"[embed] 共 {total:,} 条，分 {n_shards} 个 shard（shard_size={shard_size:,}）")
+
+    if dry_run:
+        logger.warning("[embed] dry_run=True，使用零向量，不加载模型")
+
+    # 预先切分为 shard 列表（避免跨进程传大数组）
+    shard_ids_list = []
+    shard_texts_list = []
+    for si in range(n_shards):
+        s, e = si * shard_size, min((si + 1) * shard_size, total)
+        shard_ids_list.append(ids[s:e])
+        shard_texts_list.append(texts[s:e])
+
+    # 多卡仅在非 CPU 模式下生效
+    effective_devices = 1 if device == "cpu" else max(1, num_devices)
+
+    if effective_devices > 1 and n_shards > 1:
+        # 按卡数均分 shard 索引
+        shard_groups: list[list[int]] = [[] for _ in range(effective_devices)]
+        for si in range(n_shards):
+            shard_groups[si % effective_devices].append(si)
+
+        worker_args = []
+        for device_id, group in enumerate(shard_groups):
+            if not group:
+                continue
+            device_str = f"{device}:{device_id}"
+            worker_args.append((
+                group,
+                str(output_dir),
+                shard_ids_list,
+                shard_texts_list,
+                shard_size,
+                model_path, dimension, batch_size, device_str, dry_run,
+            ))
+
+        logger.info(f"[embed] 使用 {effective_devices} 个设备（{device}:0 ~ {device}:{effective_devices-1}）")
+        shards_written = shards_skipped = 0
+        with ProcessPoolExecutor(max_workers=effective_devices) as exe:
+            for written, skipped in exe.map(_embed_shards_on_device, worker_args):
+                shards_written += written
+                shards_skipped += skipped
+    else:
+        # 单设备顺序处理
+        written, skipped = _embed_shards_on_device((
+            list(range(n_shards)),
+            str(output_dir),
+            shard_ids_list,
+            shard_texts_list,
+            shard_size,
+            model_path, dimension, batch_size, device, dry_run,
+        ))
+        shards_written, shards_skipped = written, skipped
 
     logger.info(
         f"[embed] 完成: total={total:,}, "

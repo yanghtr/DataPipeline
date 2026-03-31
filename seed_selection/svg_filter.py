@@ -57,8 +57,9 @@ def run_svg_filter(
 
     # 第一遍：收集 svg_len
     for rec in read_jsonl(input_path):
-        domain = rec.get("domain", "stage1_icon")
-        domain_svg_lens.setdefault(domain, []).append(rec.get("svg_len", 0))
+        meta = rec.get("_meta", {})
+        domain = meta.get("domain", "stage1_icon")
+        domain_svg_lens.setdefault(domain, []).append(meta.get("svg_len", 0))
 
     # 计算截断值
     cutoffs: dict[str, int] = {}
@@ -75,9 +76,10 @@ def run_svg_filter(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as fout:
         for rec in read_jsonl(input_path):
-            domain = rec.get("domain", "stage1_icon")
+            meta = rec.get("_meta", {})
+            domain = meta.get("domain", "stage1_icon")
             cutoff = cutoffs.get(domain, 0)
-            if domain in _FILTER_DOMAINS and rec.get("svg_len", 0) <= cutoff:
+            if domain in _FILTER_DOMAINS and meta.get("svg_len", 0) <= cutoff:
                 stats.removed_per_domain[domain] = stats.removed_per_domain.get(domain, 0) + 1
                 continue
             stats.kept_per_domain[domain] = stats.kept_per_domain.get(domain, 0) + 1

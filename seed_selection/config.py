@@ -16,6 +16,7 @@ class EmbedConfig:
     batch_size: int = 16
     device: str = "cpu"
     shard_size: int = 100_000
+    num_devices: int = 1   # 使用的 GPU/NPU 卡数（CPU 模式固定为 1）
 
 
 @dataclass
@@ -57,6 +58,7 @@ class PipelineConfig:
     clustering: ClusterConfig
     sampling: SamplingConfig
     svg_filter_bottom_pct: float = 0.10
+    num_workers: int = 4   # extract / dedup_near / cluster 的并行进程数
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -78,6 +80,7 @@ def load_config(path: Path) -> PipelineConfig:
             batch_size=emb.get("batch_size", 16),
             device=emb.get("device", "cpu"),
             shard_size=emb.get("shard_size", 100_000),
+            num_devices=emb.get("num_devices", 1),
         ),
         near_dedup=NearDedupConfig(
             num_perm=nd.get("num_perm", 128),
@@ -103,4 +106,5 @@ def load_config(path: Path) -> PipelineConfig:
             high_priority_pool_size=sa.get("high_priority_pool_size", 100_000),
             random_seed=sa.get("random_seed", 42),
         ),
+        num_workers=raw.get("num_workers", 4),
     )

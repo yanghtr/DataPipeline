@@ -28,14 +28,17 @@ def _read(path: Path) -> list[dict]:
     return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
 
 
+def _rec(id_: str, instruction: str, domain: str) -> dict:
+    return {
+        "instruction": instruction,
+        "_meta": {"id": id_, "domain": domain, "source": "img2svg", "svg_len": 100},
+    }
+
+
 def test_cluster_assigns_all_records(tmp_path):
     n = 20
     ids = [f"f:{i}" for i in range(n)]
-    records = [
-        {"id": ids[i], "instruction": f"text {i}", "svg_len": 100,
-         "domain": "stage1_icon", "source": "img2svg"}
-        for i in range(n)
-    ]
+    records = [_rec(ids[i], f"text {i}", "stage1_icon") for i in range(n)]
     meta = _write_meta(tmp_path, records)
     emb_dir = _write_embeddings(tmp_path, ids)
     out = tmp_path / "cluster.jsonl"
@@ -46,10 +49,11 @@ def test_cluster_assigns_all_records(tmp_path):
     result = _read(out)
     assert len(result) == n
     for rec in result:
-        assert "cluster_id" in rec
-        assert "cluster_size" in rec
-        assert "distance_to_centroid" in rec
-        assert "bucket_key" in rec
+        meta_out = rec["_meta"]
+        assert "cluster_id" in meta_out
+        assert "cluster_size" in meta_out
+        assert "distance_to_centroid" in meta_out
+        assert "bucket_key" in meta_out
 
 
 def test_cluster_multi_domain(tmp_path):
@@ -58,11 +62,8 @@ def test_cluster_multi_domain(tmp_path):
     all_ids  = ids_icon + ids_ill
 
     records = (
-        [{"id": ids_icon[i], "instruction": f"icon {i}", "svg_len": 100,
-          "domain": "stage1_icon", "source": "img2svg"} for i in range(10)]
-        +
-        [{"id": ids_ill[i],  "instruction": f"ill {i}",  "svg_len": 5000,
-          "domain": "stage2_illustration", "source": "img2svg"} for i in range(5)]
+        [_rec(ids_icon[i], f"icon {i}", "stage1_icon") for i in range(10)]
+        + [_rec(ids_ill[i],  f"ill {i}",  "stage2_illustration") for i in range(5)]
     )
     meta = _write_meta(tmp_path, records)
     emb_dir = _write_embeddings(tmp_path, all_ids)
@@ -74,7 +75,7 @@ def test_cluster_multi_domain(tmp_path):
 
     result = _read(out)
     assert len(result) == 15
-    domains = {r["bucket_key"] for r in result}
+    domains = {r["_meta"]["bucket_key"] for r in result}
     assert "stage1_icon" in domains
     assert "stage2_illustration" in domains
 
@@ -82,8 +83,7 @@ def test_cluster_multi_domain(tmp_path):
 def test_cluster_k_exceeds_samples(tmp_path):
     """K > 样本数时应自动降低 K，不崩溃。"""
     ids = [f"f:{i}" for i in range(3)]
-    records = [{"id": ids[i], "instruction": f"t{i}", "svg_len": 100,
-                "domain": "stage1_icon", "source": "img2svg"} for i in range(3)]
+    records = [_rec(ids[i], f"t{i}", "stage1_icon") for i in range(3)]
     meta = _write_meta(tmp_path, records)
     emb_dir = _write_embeddings(tmp_path, ids)
     out = tmp_path / "cluster.jsonl"

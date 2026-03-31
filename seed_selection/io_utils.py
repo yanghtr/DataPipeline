@@ -20,6 +20,19 @@ def make_id(source_file: str, line_no: int) -> str:
     return f"{source_file}:{line_no}"
 
 
+def get_meta(rec: dict) -> dict:
+    """返回记录的 _meta 字典（不存在时返回空 dict）。"""
+    return rec.get("_meta", {})
+
+
+def update_meta(rec: dict, **kwargs) -> dict:
+    """将 kwargs 合并进 rec["_meta"]，返回更新后的 rec。"""
+    if "_meta" not in rec:
+        rec["_meta"] = {}
+    rec["_meta"].update(kwargs)
+    return rec
+
+
 def read_jsonl(path: Path) -> Iterator[dict]:
     """逐行读取 JSONL，跳过空行，解析错误时静默跳过。"""
     with path.open("r", encoding="utf-8") as f:

@@ -53,6 +53,7 @@ def run_extract(cfg: PipelineConfig, root: Path, dry_run: bool, dry_run_n: int, 
         input_paths=[Path(p) for p in cfg.input_paths],
         output_path=root / "instruction_pool_raw.jsonl",
         dry_run_limit=dry_run_n if dry_run else None,
+        num_workers=cfg.num_workers,
     )
 
 
@@ -74,6 +75,7 @@ def run_dedup_near(cfg: PipelineConfig, root: Path, **_) -> None:
         thresholds=cfg.near_dedup.thresholds,
         num_perm=cfg.near_dedup.num_perm,
         char_ngram=cfg.near_dedup.char_ngram,
+        num_workers=cfg.num_workers,
     )
 
 
@@ -97,6 +99,7 @@ def run_embed(cfg: PipelineConfig, root: Path, dry_run: bool, **_) -> None:
         device=cfg.embedding.device,
         shard_size=cfg.embedding.shard_size,
         dry_run=dry_run,
+        num_devices=cfg.embedding.num_devices,
     )
 
 
@@ -109,6 +112,7 @@ def run_cluster(cfg: PipelineConfig, root: Path, **_) -> None:
         k_per_bucket=cfg.clustering.k_per_bucket,
         random_seed=cfg.clustering.random_seed,
         minibatch_size=cfg.clustering.minibatch_size,
+        num_workers=cfg.num_workers,
     )
 
 
@@ -224,6 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
     # estimate
     sub.add_parser("estimate", help="打印时间估算")
 
+    # analyze
+    sub.add_parser("analyze", help="生成质量报告和可视化图表")
+
     return parser
 
 
@@ -234,6 +241,9 @@ def main(argv=None) -> None:
 
     if args.command == "estimate":
         cmd_estimate(cfg)
+    elif args.command == "analyze":
+        from .analyze import run_analyze
+        run_analyze(cfg.output_root)
     elif args.command == "run":
         cmd_run(
             cfg=cfg,

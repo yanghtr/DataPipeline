@@ -17,14 +17,16 @@ def _read(path: Path) -> list[dict]:
 
 
 def _rec(id_: str, instruction: str, domain: str = "stage1_icon") -> dict:
-    return {"id": id_, "instruction": instruction, "svg_len": 100, "domain": domain, "source": "img2svg"}
+    return {
+        "instruction": instruction,
+        "_meta": {"id": id_, "domain": domain, "source": "img2svg", "svg_len": 100},
+    }
 
 
 THRESHOLDS = {"stage1_icon": 0.8, "stage2_icon": 0.8, "stage2_illustration": 0.7}
 
 
 def test_dedup_near_removes_near_dup(tmp_path):
-    # 这两条 instruction 有大量重叠的 char 5-gram，应被判定为 near-dup
     near_dup_1 = "Generate a red five-pointed star on a white background canvas area."
     near_dup_2 = "Generate a red five-pointed star on a white background canvas area now."
     distinct   = "Draw a blue circle in the center of the image completely."
@@ -38,9 +40,9 @@ def test_dedup_near_removes_near_dup(tmp_path):
     stats = run_dedup_near(_write(tmp_path, records), out, thresholds=THRESHOLDS)
 
     kept = _read(out)
-    assert len(kept) == 2  # near_dup_2 removed
-    kept_ids = {r["id"] for r in kept}
-    assert "f:1" in kept_ids  # first one kept
+    assert len(kept) == 2
+    kept_ids = {r["_meta"]["id"] for r in kept}
+    assert "f:1" in kept_ids
     assert "f:3" in kept_ids
 
 
@@ -53,7 +55,7 @@ def test_dedup_near_keeps_distinct(tmp_path):
     out = tmp_path / "out.jsonl"
     run_dedup_near(_write(tmp_path, records), out, thresholds=THRESHOLDS)
     kept = _read(out)
-    assert len(kept) == 3  # all distinct
+    assert len(kept) == 3
 
 
 def test_dedup_near_cross_domain_no_interference(tmp_path):
@@ -66,4 +68,4 @@ def test_dedup_near_cross_domain_no_interference(tmp_path):
     out = tmp_path / "out.jsonl"
     run_dedup_near(_write(tmp_path, records), out, thresholds=THRESHOLDS)
     kept = _read(out)
-    assert len(kept) == 2  # 不同 domain 各保留一条
+    assert len(kept) == 2

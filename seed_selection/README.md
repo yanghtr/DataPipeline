@@ -20,6 +20,49 @@ canonical JSONL (7.7M)
     ↓ sample         按比例采样 → pool_1000k / anneal_pool / high_priority_pool
 ```
 
+### 并行计算设计
+
+四个计算密集阶段做了并行改造：
+
+| 阶段 | 并行粒度 | 说明 |
+|------|---------|------|
+| extract | 文件级 | 6 个输入文件各开一个 worker，结果按 img2svg-优先顺序 merge |
+| dedup_near | MinHash chunk 级 | 见下方「near dedup 两阶段算法」 |
+| cluster | bucket 级 | 3 个 bucket 各开一个 worker，embedding 矩阵以 bytes 传递 |
+| embed | 设备级 | shard 按卡数 round-robin 分配，每张卡加载独立模型实例 |
+
+并行进程数由 `num_workers`（extract/dedup_near/cluster）和 `embedding.num_devices`（embed）控制。
+
+### near dedup 两阶段算法
+
+MinHash LSH 去重在算法上分为两个性质截然不同的阶段：
+
+```
+Phase 1（并行）：计算 MinHash signature
+  对每条文本独立计算 char 5-gram → 更新 128 个 permutation hash
+  → 输出 hashvalues (uint64 × 128) 序列化为 bytes
+  → 拆成 num_workers 个 chunk，ProcessPoolExecutor 并行执行
+
+Phase 2（顺序，必须）：增量 LSH 去重
+  for 每条记录 (按原始顺序):
+      从 bytes 重建 MinHash 对象
+      if LSH.query(minhash) 返回空:     # 无近似重复
+          LSH.insert(key, minhash)
+          保留此记录
+      else:
+          丢弃（已有近似重复）
+```
+
+**Phase 1 是瓶颈**：以 stage1_icon（2.8M 条，平均 79 字符）为例：
+`2.8M × ~75 n-gram × 128 perm ≈ 270 亿次 pure-Python hash`，这是旧版跑 1.5h+ 的原因。
+`num_workers=4` 可将 Phase 1 缩短至约 1/4。
+
+**Phase 2 必须顺序**：LSH 的 query 需要能看见所有已插入的记录，若并行则不同 chunk 之间的近似重复无法被检测到。
+
+**结果确定性**：Phase 1 对每条文本的计算与 worker 分配无关，Phase 2 始终顺序执行，因此 **任意 `num_workers` 值的输出完全一致**。
+
+**num_workers 上限**：物理 CPU 核数。超过核数无额外收益，建议设为核数的 50–75%。
+
 ### 三桶策略
 
 | bucket_key | 域 | K（聚类数） | near dedup 阈值 |
@@ -135,6 +178,7 @@ python -m seed_selection.main --config CONFIG COMMAND [options]
 命令：
   run         运行流水线
   estimate    打印时间估算（不实际运行）
+  analyze     生成质量报告和可视化图表
 
 run 选项：
   --resume            跳过已有输出文件的阶段
@@ -165,21 +209,25 @@ run 选项：
 
 ### 中间记录 schema
 
-各阶段 JSONL 的每条记录携带：
+各阶段 JSONL 的每条记录结构：`instruction` 为唯一顶层 payload 字段，所有流水线元数据统一放在 `_meta` 下。
 
 ```json
 {
-  "id": "stage1_icon/img2svg/data_000000:42",
   "instruction": "Draw a simple house icon",
-  "svg_len": 312,
-  "domain": "stage1_icon",
-  "source": "img2svg",
-  "bucket_key": "stage1_icon",
-  "cluster_id": 17,
-  "cluster_size": 284,
-  "distance_to_centroid": 0.043
+  "_meta": {
+    "id": "stage1_icon/img2svg/data_000000:42",
+    "domain": "stage1_icon",
+    "source": "img2svg",
+    "svg_len": 312,
+    "bucket_key": "stage1_icon",
+    "cluster_id": 17,
+    "cluster_size": 284,
+    "distance_to_centroid": 0.043
+  }
 }
 ```
+
+各字段在流水线中逐步追加：`id/domain/source/svg_len` 由 extract 写入，`bucket_key` 由 cluster 写入，`cluster_id/cluster_size/distance_to_centroid` 由 cluster 写入。
 
 ---
 
@@ -212,6 +260,9 @@ input_paths:
 
 output_root: /path/to/output
 
+num_workers: 4                 # extract / dedup_near / cluster 的并行进程数
+                               # 建议设为物理 CPU 核数的 50–75%
+
 svg_filter_bottom_pct: 0.10    # icon 域去除最简单的 10%
 
 embedding:
@@ -220,6 +271,8 @@ embedding:
   batch_size: 16               # CPU；GPU 建议 256
   device: cpu                  # cpu | cuda | npu
   shard_size: 100000
+  num_devices: 1               # GPU/NPU 卡数；8 卡 NPU 节点设为 8
+                               # CPU 模式固定单进程（忽略此值）
 
 near_dedup:
   num_perm: 128
@@ -248,18 +301,20 @@ sampling:
 
 ## CPU 时间估算（全量 7.7M）
 
-| 阶段 | 数据量 | 估算时间 |
-|------|--------|---------|
-| extract | 7.7M 条 | ~10 分钟 |
-| clean | ~7.7M | ~3 分钟 |
-| dedup_exact | ~7.7M | ~5 分钟 |
-| dedup_near | ~4M | ~20–40 分钟（按 domain 分批）|
-| svg_filter | ~4M | ~3 分钟 |
-| embed | ~3M | **18–22 小时**（CPU）/ 1–2 小时（GPU）|
-| cluster | ~3M | ~30 分钟 |
-| sample | ~3M | ~5 分钟 |
+以下估算基于 `num_workers=4`：
 
-embed 阶段是瓶颈，GPU/NPU 可将总时间降至 2–3 小时。
+| 阶段 | 数据量 | 单进程 | num_workers=4 |
+|------|--------|--------|---------------|
+| extract | 7.7M 条 | ~10 分钟 | ~3 分钟 |
+| clean | ~7.7M | ~3 分钟 | ~3 分钟（无并行）|
+| dedup_exact | ~7.7M | ~5 分钟 | ~5 分钟（无并行）|
+| dedup_near | ~4M | ~90–120 分钟 | **~25–40 分钟** |
+| svg_filter | ~4M | ~3 分钟 | ~3 分钟（无并行）|
+| embed | ~3M | **18–22 小时**（CPU）| 1–2 小时（GPU ×1）/ ~15 分钟（NPU ×8）|
+| cluster | ~3M | ~30 分钟 | ~12 分钟 |
+| sample | ~3M | ~5 分钟 | ~5 分钟（无并行）|
+
+embed 是最大瓶颈：CPU 不可行（18–22 小时），强烈建议 GPU/NPU。8 卡 NPU 时设 `num_devices: 8` 可将 embed 缩至 ~15 分钟，全流程约 1 小时。
 
 ---
 

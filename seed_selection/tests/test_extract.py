@@ -21,11 +21,13 @@ def test_extract_fields(tmp_path, all_input_paths):
     records = [json.loads(l) for l in out.read_text().splitlines() if l.strip()]
     assert len(records) > 0
     for rec in records:
-        assert "id" in rec
         assert "instruction" in rec and isinstance(rec["instruction"], str)
-        assert "svg_len" in rec and isinstance(rec["svg_len"], int) and rec["svg_len"] > 0
-        assert "domain" in rec and rec["domain"] in ("stage1_icon", "stage2_icon", "stage2_illustration")
-        assert "source" in rec and rec["source"] in ("img2svg", "text2svg")
+        assert "_meta" in rec
+        meta = rec["_meta"]
+        assert "id" in meta
+        assert "svg_len" in meta and isinstance(meta["svg_len"], int) and meta["svg_len"] > 0
+        assert "domain" in meta and meta["domain"] in ("stage1_icon", "stage2_icon", "stage2_illustration")
+        assert "source" in meta and meta["source"] in ("img2svg", "text2svg")
 
 
 def test_extract_img2svg_before_text2svg(tmp_path, all_input_paths):
@@ -35,7 +37,7 @@ def test_extract_img2svg_before_text2svg(tmp_path, all_input_paths):
 
     import json
     records = [json.loads(l) for l in out.read_text().splitlines() if l.strip()]
-    sources = [r["source"] for r in records]
+    sources = [r["_meta"]["source"] for r in records]
     # 找到第一个 text2svg 的位置
     first_text = next((i for i, s in enumerate(sources) if s == "text2svg"), len(sources))
     # 其后不应有 img2svg

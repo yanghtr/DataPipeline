@@ -37,12 +37,10 @@ def test_allocate_cluster_budget_sum():
 
 def test_allocate_cluster_budget_more_clusters_than_budget():
     """cluster 数 > budget 时，只覆盖最大的 budget 个 cluster，总和 == budget。"""
-    sizes = {i: i + 1 for i in range(100)}  # 100 clusters
+    sizes = {i: i + 1 for i in range(100)}
     budget = _allocate_cluster_budget(sizes, 10)
     assert sum(budget.values()) == 10
-    # 分到 budget 的都是 1
     assert all(v in (0, 1) for v in budget.values())
-    # 被选中的是 size 最大的 10 个（id=90..99）
     selected = {cid for cid, v in budget.items() if v == 1}
     assert selected == set(range(90, 100))
 
@@ -57,15 +55,17 @@ def _make_cluster_assignments(tmp_path: Path, n_per_cluster: int = 5,
         for j in range(n_per_cluster):
             idx = cid * n_per_cluster + j
             records.append({
-                "id":                   f"r:{idx}",
-                "instruction":          f"instruction {idx}",
-                "svg_len":              100 + idx,
-                "domain":               domain,
-                "source":               "img2svg",
-                "bucket_key":           domain,
-                "cluster_id":           cid,
-                "cluster_size":         n_per_cluster,
-                "distance_to_centroid": float(j) / 10,  # j=0 最近
+                "instruction": f"instruction {idx}",
+                "_meta": {
+                    "id":                   f"r:{idx}",
+                    "domain":               domain,
+                    "source":               "img2svg",
+                    "svg_len":              100 + idx,
+                    "bucket_key":           domain,
+                    "cluster_id":           cid,
+                    "cluster_size":         n_per_cluster,
+                    "distance_to_centroid": float(j) / 10,
+                },
             })
     p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
     return p
@@ -96,10 +96,8 @@ def test_run_sample_high_priority_most_central(tmp_path):
     run_sample(cluster_path, tmp_path,
                total_pool_size=10, high_priority_size=2, random_seed=42)
 
-    import json as _json
-    hp = [_json.loads(l) for l in (tmp_path / "high_priority_pool.jsonl").read_text().splitlines() if l.strip()]
-    # 每个 cluster 最近的是 j=0，distance=0.0
-    distances = [r["distance_to_centroid"] for r in hp]
+    hp = [json.loads(l) for l in (tmp_path / "high_priority_pool.jsonl").read_text().splitlines() if l.strip()]
+    distances = [r["_meta"]["distance_to_centroid"] for r in hp]
     assert all(d == 0.0 for d in distances)
 
 
@@ -110,7 +108,8 @@ def test_run_sample_no_overlap(tmp_path):
                total_pool_size=20, high_priority_size=4, random_seed=42)
 
     def ids(f):
-        return {json.loads(l)["id"] for l in (tmp_path / f).read_text().splitlines() if l.strip()}
+        return {json.loads(l)["_meta"]["id"]
+                for l in (tmp_path / f).read_text().splitlines() if l.strip()}
 
     hp_ids = ids("high_priority_pool.jsonl")
     anneal_ids = ids("anneal_pool.jsonl")
