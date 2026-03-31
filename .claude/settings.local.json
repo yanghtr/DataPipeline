@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import sys,json; [print\\(json.dumps\\(json.loads\\(l\\), indent=2, ensure_ascii=False\\)\\) for l in sys.stdin]\")",
+      "Bash(chmod:*)",
+      "Bash(python3 converters/convert_sagoge.py --input /home/yanghaitao/Projects/Data/raw/SAgoge/stage1/icon/generation/img2svg/img2svg_alpaca.jsonl --output /tmp/test_sagoge_img2svg.jsonl --train-mode sft --image-root /home/yanghaitao/Projects/Data/raw/SAgoge)",
+      "Bash(wait)",
+      "Read(//tmp/**)",
+      "Bash(python3 -c \"import sys,json; d=json.loads\\(sys.stdin.read\\(\\)\\); print\\(json.dumps\\(d, indent=2, ensure_ascii=False\\)\\)\")",
+      "Bash(bash converters/run_sagoge.sh 2>&1)",
+      "Bash(python3 -c \"import flask; print\\(''flask ok''\\)\")",
+      "Bash(python3 -c \"import loguru; print\\(''loguru ok''\\)\")",
+      "Bash(pip list:*)",
+      "Bash(python3 -m json.tool)",
+      "Bash(while read:*)",
+      "Bash(do wc:*)",
+      "Bash(done)",
+      "Bash(python3:*)"
+    ]
+  }
+}

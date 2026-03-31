@@ -1,0 +1,45 @@
+# 种子 Query 筛选流水线配置
+
+# 输入文件列表（img2svg 文件必须在 text2svg 之前，确保 exact dedup 时 img2svg 优先）
+input_paths:
+  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage1/icon/generation/img2svg/data_000000.jsonl
+  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/icon/generation/img2svg/data_000000.jsonl
+  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/illustration/img2svg/data_000000.jsonl
+  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage1/icon/generation/text2svg/data_000000.jsonl
+  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/icon/generation/text2svg/data_000000.jsonl
+  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/illustration/text2svg/data_000000.jsonl
+
+# 输出根目录
+output_root: /home/yanghaitao/Projects/Data/query_seed/SAgoge
+
+# SVG 复杂度过滤：去除 stage1_icon / stage2_icon 中 svg_len 最小的 N%（illustration 全保留）
+svg_filter_bottom_pct: 0.10
+
+embedding:
+  model_path: /home/yanghaitao/Projects/CKPT/Qwen3-Embedding-0.6B
+  dimension: 256
+  batch_size: 16           # CPU 默认；GPU 建议 256
+  device: cpu              # cpu | cuda | npu
+  shard_size: 100000       # 每个 shard 的样本数
+
+near_dedup:
+  num_perm: 128            # MinHash 排列数（影响精度与速度）
+  char_ngram: 5            # 字符级 n-gram（适合短文本）
+  thresholds:
+    stage1_icon: 0.8       # 短文本严格阈值
+    stage2_icon: 0.8
+    stage2_illustration: 0.7   # 长文本宽松阈值
+
+clustering:
+  k_per_bucket:
+    stage1_icon: 10000
+    stage2_icon: 2000
+    stage2_illustration: 3000
+  random_seed: 42
+  minibatch_size: 50000    # MiniBatchKMeans 每批大小
+
+sampling:
+  total_pool_size: 1000000
+  anneal_pool_size: 900000
+  high_priority_pool_size: 100000
+  random_seed: 42

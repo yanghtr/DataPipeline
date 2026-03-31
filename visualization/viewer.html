@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>多模态数据可视化</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" rel="stylesheet">
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    .app { display: flex; height: 100vh; font-size: 14px; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 240px; min-width: 240px;
+      display: flex; flex-direction: column;
+      border-right: 1px solid #dee2e6;
+      background: #f8f9fa;
+    }
+    #sidebar-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid #dee2e6;
+      background: white;
+      flex-shrink: 0;
+    }
+    #sidebar-header .title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+    #sidebar-meta { font-size: 11px; color: #6c757d; margin-bottom: 6px; }
+    #sample-list { flex: 1; overflow-y: auto; }
+
+    .sample-item {
+      padding: 6px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid #eee;
+      line-height: 1.3;
+    }
+    .sample-item:hover { background: #e9ecef; }
+    .sample-item.active { background: #0d6efd; color: white; }
+    .sample-item.active .sub { color: rgba(255,255,255,0.7) !important; }
+    .sample-item .main-label { font-size: 13px; font-weight: 500; }
+    .sample-item .sub { font-size: 11px; color: #6c757d; }
+
+    /* ── Main ── */
+    #main { flex: 1; overflow-y: auto; padding: 16px 20px; }
+
+    /* ── Info bar ── */
+    #schema-bar {
+      background: #f0f4ff;
+      border: 1px solid #c8d8ff;
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 12px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    #schema-bar .path { font-weight: 600; word-break: break-all; }
+    #schema-bar .tags { margin-top: 4px; }
+
+    /* ── Content cards ── */
+    .turn-card {
+      border-radius: 8px;
+      border: 1px solid #dee2e6;
+      margin-bottom: 14px;
+      overflow: hidden;
+    }
+    .turn-header {
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+    .turn-header.user     { background: #d1e7dd; color: #0a3622; }
+    .turn-header.assistant { background: #cfe2ff; color: #052c65; }
+    .turn-body { padding: 12px 14px; }
+
+    /* ── Images ── */
+    .img-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+    .img-wrap img {
+      max-width: 280px; max-height: 280px;
+      border: 1px solid #dee2e6; border-radius: 4px;
+      display: block;
+    }
+    .img-wrap .img-caption { font-size: 10px; color: #6c757d; margin-top: 3px; word-break: break-all; }
+    .img-error {
+      width: 200px; height: 160px;
+      background: #ced4da; border-radius: 4px;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: #495057; font-size: 11px; text-align: center; padding: 10px;
+    }
+
+    /* ── Text ── */
+    .text-block { font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+    .code-wrap {
+      background: #f6f8fa; border: 1px solid #e1e4e8;
+      border-radius: 6px; padding: 10px 14px;
+      overflow-x: auto; margin: 6px 0;
+    }
+    .code-wrap pre { margin: 0; }
+    .code-wrap code { font-size: 12px; }
+
+    /* ── Renderer ── */
+    .renderer-row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+    .renderer-panel { flex: 0 0 auto; }
+    .renderer-panel h6 { font-size: 12px; font-weight: 600; color: #6c757d; margin-bottom: 6px; }
+    #svg-frame {
+      width: 300px; height: 300px;
+      border: 1px solid #dee2e6; border-radius: 4px;
+    }
+    #html-frame {
+      width: 100%; min-height: 400px;
+      border: 1px solid #dee2e6; border-radius: 4px;
+    }
+    .no-renderer { color: #6c757d; font-size: 13px; padding: 20px 0; }
+
+    /* ── Nav ── */
+    .sample-nav .badge { font-size: 12px; padding: 5px 10px; }
+    .nav-tabs .nav-link { font-size: 13px; }
+
+    /* ── Empty ── */
+    #empty-state { text-align: center; color: #adb5bd; padding-top: 100px; }
+    #empty-state .icon { font-size: 52px; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Sidebar ── -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <div class="title">样本浏览器</div>
+      <div id="sidebar-meta"></div>
+      <input id="search-box" type="text" class="form-control form-control-sm"
+             placeholder="搜索 index / 行号…" autocomplete="off">
+    </div>
+    <div id="sample-list"></div>
+  </div>
+
+  <!-- ── Main ── -->
+  <div id="main">
+    <!-- Schema info bar -->
+    <div id="schema-bar"></div>
+
+    <!-- Empty state -->
+    <div id="empty-state">
+      <div class="icon">🗂️</div>
+      <div>从左侧列表选择一条样本</div>
+    </div>
+
+    <!-- Sample panel -->
+    <div id="sample-panel" style="display:none;">
+
+      <!-- Navigation header -->
+      <div class="d-flex align-items-center flex-wrap gap-2 mb-3 sample-nav">
+        <span class="badge bg-secondary" id="badge-index"></span>
+        <span class="badge bg-primary" id="badge-line"></span>
+        <span class="badge bg-light text-dark border" id="badge-mp" style="font-size:11px;"></span>
+        <div class="ms-auto d-flex gap-1">
+          <button class="btn btn-sm btn-outline-secondary" id="btn-prev" title="上一条 (←)">‹</button>
+          <button class="btn btn-sm btn-outline-secondary" id="btn-next" title="下一条 (→)">›</button>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <ul class="nav nav-tabs mb-3">
+        <li class="nav-item">
+          <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-overview">概览</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-json">原始 JSON</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-renderer">渲染器</button>
+        </li>
+      </ul>
+
+      <div class="tab-content">
+        <!-- Overview -->
+        <div class="tab-pane fade show active" id="tab-overview">
+          <div id="overview-content"></div>
+        </div>
+        <!-- Raw JSON -->
+        <div class="tab-pane fade" id="tab-json">
+          <div class="code-wrap">
+            <pre><code class="language-json" id="raw-json-code"></code></pre>
+          </div>
+        </div>
+        <!-- Renderer -->
+        <div class="tab-pane fade" id="tab-renderer">
+          <div id="renderer-content"></div>
+        </div>
+      </div>
+
+    </div><!-- /sample-panel -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+// ════════════════════════════════════════════════════════════════════════
+// State
+// ════════════════════════════════════════════════════════════════════════
+let allSamples = [];       // [{index, line}]  from /api/samples
+let filteredSamples = [];  // search subset
+let currentIdx = -1;
+
+// ════════════════════════════════════════════════════════════════════════
+// Init
+// ════════════════════════════════════════════════════════════════════════
+async function init() {
+  const [info, samples] = await Promise.all([
+    fetch('/api/info').then(r => r.json()),
+    fetch('/api/samples').then(r => r.json()),
+  ]);
+
+  // Schema bar
+  const sc = info.schema;
+  const bar = document.getElementById('schema-bar');
+  bar.innerHTML = `
+    <div class="path">📄 ${escHtml(info.jsonl_path)}</div>
+    <div class="tags mt-1">
+      <span class="badge bg-secondary me-1">总行数 ${info.total_in_file.toLocaleString()}</span>
+      <span class="badge bg-primary me-1">已加载 ${info.total_loaded.toLocaleString()}
+        ${info.random_sample ? '（随机）' : '（前N）'}</span>
+      ${info.parse_errors ? `<span class="badge bg-warning text-dark me-1">解析错误 ${info.parse_errors}</span>` : ''}
+      <span class="badge bg-light text-dark border me-1">roles: ${escHtml(sc.roles.join(', '))}</span>
+      <span class="badge bg-light text-dark border me-1">types: ${escHtml(sc.content_types.join(', '))}</span>
+      ${sc.has_image ? '<span class="badge bg-success me-1">🖼 图像</span>' : ''}
+      ${sc.has_video ? '<span class="badge bg-info me-1">🎞 视频</span>' : ''}
+      ${sc.image_formats.length ? `<span class="badge bg-light text-dark border me-1">${escHtml(sc.image_formats.join(', '))}</span>` : ''}
+    </div>`;
+  bar.style.display = '';
+
+  // Sidebar meta
+  document.getElementById('sidebar-meta').textContent =
+    `${info.total_loaded} / ${info.total_in_file.toLocaleString()} 条`;
+
+  allSamples = samples;
+  filteredSamples = allSamples;
+  renderSidebar();
+
+  if (allSamples.length > 0) selectSample(0);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Sidebar
+// ════════════════════════════════════════════════════════════════════════
+function renderSidebar() {
+  const list = document.getElementById('sample-list');
+  const frag = document.createDocumentFragment();
+  filteredSamples.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'sample-item' + (s.index === currentIdx ? ' active' : '');
+    div.dataset.index = s.index;
+    div.innerHTML = `
+      <div class="main-label">#${s.index}</div>
+      <div class="sub">line: ${s.line.toLocaleString()}</div>`;
+    div.addEventListener('click', () => selectSample(s.index));
+    frag.appendChild(div);
+  });
+  list.innerHTML = '';
+  list.appendChild(frag);
+}
+
+function updateSidebarActive() {
+  document.querySelectorAll('.sample-item').forEach(el => {
+    el.classList.toggle('active', parseInt(el.dataset.index) === currentIdx);
+    if (parseInt(el.dataset.index) === currentIdx) {
+      el.querySelector('.sub').classList.add('sub');
+    }
+  });
+}
+
+function scrollSidebarToActive() {
+  const el = document.querySelector('.sample-item.active');
+  if (el) el.scrollIntoView({ block: 'nearest' });
+}
+
+// Search
+document.getElementById('search-box').addEventListener('input', function () {
+  const q = this.value.trim().toLowerCase();
+  filteredSamples = q
+    ? allSamples.filter(s => String(s.index).includes(q) || String(s.line).includes(q))
+    : allSamples;
+  renderSidebar();
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// Sample selection
+// ════════════════════════════════════════════════════════════════════════
+async function selectSample(idx) {
+  const resp = await fetch(`/api/sample/${idx}`);
+  if (!resp.ok) return;
+  const sample = await resp.json();
+
+  currentIdx = idx;
+  updateSidebarActive();
+  scrollSidebarToActive();
+
+  document.getElementById('empty-state').style.display = 'none';
+  const panel = document.getElementById('sample-panel');
+  panel.style.display = '';
+
+  renderHeader(sample);
+  renderOverview(sample);
+  renderJSON(sample);
+  renderRenderer(sample);
+}
+
+// Prev / Next
+document.getElementById('btn-prev').addEventListener('click', () => {
+  if (currentIdx > 0) selectSample(currentIdx - 1);
+});
+document.getElementById('btn-next').addEventListener('click', () => {
+  if (currentIdx < allSamples.length - 1) selectSample(currentIdx + 1);
+});
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (currentIdx > 0) selectSample(currentIdx - 1);
+  } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (currentIdx < allSamples.length - 1) selectSample(currentIdx + 1);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// Header
+// ════════════════════════════════════════════════════════════════════════
+function renderHeader(sample) {
+  const s = allSamples.find(x => x.index === sample.index);
+  document.getElementById('badge-index').textContent = `index: ${sample.index}`;
+  document.getElementById('badge-line').textContent = `line: ${s ? s.line.toLocaleString() : '?'}`;
+  const mp = sample.data?.meta_prompt;
+  const mpEl = document.getElementById('badge-mp');
+  mpEl.textContent = mp != null ? `meta_prompt: ${JSON.stringify(mp)}` : '';
+  mpEl.style.display = mp != null ? '' : 'none';
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Shared: build turn cards DOM (used by both Overview and Renderer tabs)
+// ════════════════════════════════════════════════════════════════════════
+function buildTurnCardsDOM(sample) {
+  const frag = document.createDocumentFragment();
+  const turns = sample.data?.data || [];
+  if (turns.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'text-muted';
+    p.textContent = '无 data 字段';
+    frag.appendChild(p);
+    return frag;
+  }
+
+  turns.forEach(turn => {
+    const isUser = turn.role === 'user';
+    const card = document.createElement('div');
+    card.className = 'turn-card';
+
+    const header = document.createElement('div');
+    header.className = `turn-header ${isUser ? 'user' : 'assistant'}`;
+    header.textContent = isUser ? '👤 User' : '🤖 Assistant';
+    card.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'turn-body';
+
+    const content = turn.content || [];
+    const imageItems = content.filter(i => i.type === 'image');
+    const textItems  = content.filter(i => i.type === 'text');
+
+    // Images
+    if (imageItems.length > 0) {
+      const grid = document.createElement('div');
+      grid.className = 'img-grid';
+      imageItems.forEach(item => {
+        const img = item.image || {};
+        const rel  = img.relative_path || '';
+        const fmt  = img.format || '';
+        const w    = img.width || 0;
+        const h    = img.height || 0;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'img-wrap';
+
+        const imgEl = document.createElement('img');
+        imgEl.src = `/api/image?path=${encodeURIComponent(rel)}`;
+        imgEl.alt = rel;
+        imgEl.title = `${rel}\n${fmt}${w||h ? ` · ${w}×${h}` : ''}`;
+        imgEl.loading = 'lazy';
+        imgEl.addEventListener('error', () => {
+          const err = document.createElement('div');
+          err.className = 'image-error';
+          err.innerHTML = `<div>⚠️ 图片加载失败</div><div style="word-break:break-all;margin-top:4px;">${escHtml(rel)}</div>`;
+          wrap.replaceChild(err, imgEl);
+        });
+
+        const cap = document.createElement('div');
+        cap.className = 'img-caption';
+        cap.textContent = rel + (w || h ? ` (${w}×${h})` : '');
+
+        wrap.appendChild(imgEl);
+        wrap.appendChild(cap);
+        grid.appendChild(wrap);
+      });
+      body.appendChild(grid);
+    }
+
+    // Text items
+    textItems.forEach(item => {
+      const text = item.text?.string || '';
+      const el = document.createElement('div');
+      el.innerHTML = renderText(text);
+      body.appendChild(el);
+    });
+
+    card.appendChild(body);
+    frag.appendChild(card);
+  });
+
+  return frag;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Overview tab
+// ════════════════════════════════════════════════════════════════════════
+function renderOverview(sample) {
+  const container = document.getElementById('overview-content');
+  container.innerHTML = '';
+  container.appendChild(buildTurnCardsDOM(sample));
+}
+
+// Render text: handle ```lang\n...\n``` code blocks
+function renderText(text) {
+  const parts = [];
+  const re = /```(\w*)\n([\s\S]*?)```/g;
+  let last = 0, m;
+
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) {
+      parts.push({ type: 'text', content: text.slice(last, m.index) });
+    }
+    parts.push({ type: 'code', lang: m[1] || '', content: m[2] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    parts.push({ type: 'text', content: text.slice(last) });
+  }
+
+  return parts.map(p => {
+    if (p.type === 'code') {
+      let hl;
+      try {
+        hl = p.lang
+          ? hljs.highlight(p.content, { language: p.lang, ignoreIllegals: true }).value
+          : hljs.highlightAuto(p.content).value;
+      } catch (e) {
+        hl = escHtml(p.content);
+      }
+      return `<div class="code-wrap"><pre><code class="hljs${p.lang ? ' language-' + p.lang : ''}">${hl}</code></pre></div>`;
+    } else {
+      const trimmed = p.content.trim();
+      return trimmed ? `<div class="text-block">${escHtml(trimmed)}</div>` : '';
+    }
+  }).join('');
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Raw JSON tab
+// ════════════════════════════════════════════════════════════════════════
+function renderJSON(sample) {
+  const code = document.getElementById('raw-json-code');
+  const pretty = JSON.stringify(sample.data, null, 2);
+  code.innerHTML = hljs.highlight(pretty, { language: 'json' }).value;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Renderer tab
+// ════════════════════════════════════════════════════════════════════════
+function renderRenderer(sample) {
+  const container = document.getElementById('renderer-content');
+  container.innerHTML = '';
+
+  // ── Part 1: overview cards (same as Overview tab) ──
+  container.appendChild(buildTurnCardsDOM(sample));
+
+  // ── Divider ──
+  const hr = document.createElement('hr');
+  hr.style.cssText = 'margin: 18px 0; border-color: #dee2e6;';
+  container.appendChild(hr);
+
+  // ── Part 2: render section ──
+  const turns = sample.data?.data || [];
+  const userTurn = turns.find(t => t.role === 'user');
+  const asstTurn = turns.find(t => t.role === 'assistant');
+
+  let svgContent  = null;
+  let htmlContent = null;
+
+  for (const item of (asstTurn?.content || [])) {
+    if (item.type !== 'text') continue;
+    const text = item.text?.string || '';
+    if (!svgContent)  svgContent  = extractCodeBlock(text, 'svg') || extractRawSVG(text);
+    if (!htmlContent) htmlContent = extractCodeBlock(text, 'html');
+  }
+
+  const userImages = (userTurn?.content || []).filter(i => i.type === 'image');
+
+  const renderSection = document.createElement('div');
+  if (svgContent) {
+    renderSVGPanel(renderSection, svgContent, userImages);
+  } else if (htmlContent) {
+    renderHTMLPanel(renderSection, htmlContent);
+  } else {
+    renderSection.innerHTML = `<div class="no-renderer">🔍 未检测到 SVG 或 HTML 内容，无法渲染。</div>`;
+  }
+  container.appendChild(renderSection);
+}
+
+function renderSVGPanel(container, svgContent, userImages) {
+  const row = document.createElement('div');
+  row.className = 'renderer-row mb-3';
+
+  // User image (if any)
+  if (userImages.length > 0) {
+    const panel = document.createElement('div');
+    panel.className = 'renderer-panel';
+    panel.innerHTML = '<h6>输入图像</h6>';
+    userImages.forEach(item => {
+      const rel = item.image?.relative_path || '';
+      const wrap = document.createElement('div');
+      wrap.className = 'img-wrap';
+
+      const imgEl = document.createElement('img');
+      imgEl.src = `/api/image?path=${encodeURIComponent(rel)}`;
+      imgEl.alt = rel;
+      imgEl.style.cssText = 'max-width:300px;max-height:300px;';
+      imgEl.addEventListener('error', () => {
+        const err = document.createElement('div');
+        err.className = 'image-error';
+        err.style.width = '300px'; err.style.height = '300px';
+        err.innerHTML = `<div>⚠️ 加载失败</div><div style="word-break:break-all;margin-top:4px;">${escHtml(rel)}</div>`;
+        wrap.replaceChild(err, imgEl);
+      });
+      wrap.appendChild(imgEl);
+      panel.appendChild(wrap);
+    });
+    row.appendChild(panel);
+  }
+
+  // SVG renderer (iframe)
+  const svgPanel = document.createElement('div');
+  svgPanel.className = 'renderer-panel';
+  svgPanel.innerHTML = '<h6>SVG 渲染结果</h6>';
+  const frame = document.createElement('iframe');
+  frame.id = 'svg-frame';
+  frame.sandbox = 'allow-scripts';
+  frame.srcdoc = `<!DOCTYPE html><html><body style="margin:0;background:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;">${svgContent}</body></html>`;
+  svgPanel.appendChild(frame);
+  row.appendChild(svgPanel);
+
+  container.appendChild(row);
+
+  // SVG source code
+  const srcDiv = document.createElement('div');
+  let hl;
+  try { hl = hljs.highlight(svgContent, { language: 'xml', ignoreIllegals: true }).value; }
+  catch (e) { hl = escHtml(svgContent); }
+  srcDiv.innerHTML = `<h6 style="font-size:12px;font-weight:600;color:#6c757d;">SVG 源码</h6>
+    <div class="code-wrap"><pre><code class="hljs language-xml">${hl}</code></pre></div>`;
+  container.appendChild(srcDiv);
+}
+
+function renderHTMLPanel(container, htmlContent) {
+  container.innerHTML = '<h6 style="font-size:12px;font-weight:600;color:#6c757d;">HTML 渲染</h6>';
+  const frame = document.createElement('iframe');
+  frame.id = 'html-frame';
+  frame.sandbox = 'allow-scripts allow-same-origin';
+  frame.srcdoc = htmlContent;
+  container.appendChild(frame);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Utils
+// ════════════════════════════════════════════════════════════════════════
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function extractCodeBlock(text, lang) {
+  const re = new RegExp('```' + lang + '\\s*\\n([\\s\\S]*?)```', 'i');
+  const m = text.match(re);
+  return m ? m[1].trim() : null;
+}
+
+function extractRawSVG(text) {
+  const m = text.match(/<svg[\s\S]*?<\/svg>/i);
+  return m ? m[0] : null;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Start
+// ════════════════════════════════════════════════════════════════════════
+init().catch(err => {
+  document.getElementById('empty-state').innerHTML =
+    `<div class="icon">⚠️</div><div>加载失败: ${escHtml(String(err))}</div>`;
+});
+</script>
+</body>
+</html>
