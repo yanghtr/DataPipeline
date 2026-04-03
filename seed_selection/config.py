@@ -37,12 +37,16 @@ class ClusterConfig:
     })
     random_seed: int = 42
     minibatch_size: int = 50_000
-    # NPU 加速 KMeans（需要 torch_npu，关闭时回退到 MiniBatchKMeans）
+    # KMeans 后端选择（三档，优先级：use_npu > use_faiss > MiniBatchKMeans）
+    # use_npu:   torch_npu Lloyd's（精确，NPU/GPU 加速，需 torch_npu）
+    # use_faiss: faiss-cpu Lloyd's（精确，CPU BLAS 加速，需 faiss-cpu）
+    # 默认:      sklearn MiniBatchKMeans（近似，纯 CPU，无额外依赖）
     use_npu: bool = False
+    use_faiss: bool = False
     # 每个 bucket worker 按顺序从列表中取设备（round-robin）
     # 单卡：["npu:0"]；双卡：["npu:0", "npu:1"]；8卡：["npu:0",...,"npu:7"]
     npu_devices: list[str] = field(default_factory=lambda: ["npu:0"])
-    npu_chunk_size: int = 50_000   # 分批 cdist 以避免显存溢出
+    npu_chunk_size: int = 50_000   # 分批 cdist / scatter_add 的批大小（控制显存峰值）
 
 
 @dataclass
@@ -105,6 +109,7 @@ def load_config(path: Path) -> PipelineConfig:
             random_seed=cl.get("random_seed", 42),
             minibatch_size=cl.get("minibatch_size", 50_000),
             use_npu=cl.get("use_npu", False),
+            use_faiss=cl.get("use_faiss", False),
             npu_devices=cl.get("npu_devices", ["npu:0"]),
             npu_chunk_size=cl.get("npu_chunk_size", 50_000),
         ),

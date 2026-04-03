@@ -16,7 +16,7 @@ canonical JSONL (7.7M)
     ↓ dedup_near     MinHash near dedup，分域阈值
     ↓ svg_filter     按 svg_len 过滤 icon 域最简单 10%
     ↓ embed          Qwen3-Embedding-0.6B，256 维，shard 输出
-    ↓ cluster        每 bucket MiniBatchKMeans（可选 NPU 加速），记录 cluster_id / centrality
+    ↓ cluster        每 bucket KMeans（三档后端可选：MiniBatchKMeans / faiss-cpu / NPU），记录 cluster_id / centrality
     ↓ sample         按比例采样 → pool_1000k / anneal_pool / high_priority_pool
 ```
 
@@ -84,17 +84,59 @@ Phase 2（顺序，必须）：增量 band hash 去重
 
 **num_workers 推荐值**：物理核数的 50–75%。超过核数无额外收益；设太大反而增加进程启动和 IPC 开销。
 
-### KMeans 加速（NPU 可选）
+### KMeans 三档后端
 
-聚类阶段支持三种后端：
+聚类阶段支持三档后端，通过 YAML 配置切换，优先级：`use_npu` > `use_faiss` > 默认。
 
-| 后端 | 配置 | 速度 | 适用场景 |
-|------|------|------|---------|
-| sklearn MiniBatchKMeans | `use_npu: false`（默认） | 基准 | CPU 环境，K≤12K |
-| torch_npu Lloyd's | `use_npu: true`, `npu_device: "npu:0"` | ~30–100× | Ascend 910B NPU |
-| torch CUDA Lloyd's | `use_npu: true`, `npu_device: "cuda:0"` | ~50–200× | NVIDIA GPU |
+| 后端 | 算法类型 | 安装 | 速度（相对） | 适用场景 |
+|------|---------|------|------------|---------|
+| sklearn MiniBatchKMeans | 近似（Mini-batch） | 已含（无需额外安装） | 1× | CPU 开发/调试 |
+| faiss-cpu Lloyd's | **精确** | `pip install faiss-cpu` | **5–15×** | CPU 生产环境 |
+| torch_npu / CUDA Lloyd's | **精确** | `pip install torch torch_npu` | **30–100×** | Ascend 910B / NVIDIA GPU |
 
-NPU 模式使用标准 Lloyd's 算法（`torch.cdist` 分批计算 N×K 距离矩阵），结果质量优于 MiniBatchKMeans。分批大小由 `npu_chunk_size`（默认 50K）控制显存占用：N=2.25M, K=12K 时，chunk=50K 约需 2.4GB/批。
+**使用 faiss-cpu（CPU 精确 KMeans，推荐 CPU 生产）**：
+```yaml
+clustering:
+  use_faiss: true    # 启用 faiss-cpu Lloyd's（精确算法，5–15× 快于 MiniBatchKMeans）
+  use_npu: false     # use_npu 优先于 use_faiss，两者同时为 true 时 NPU 生效
+```
+安装：`pip install faiss-cpu`
+
+> faiss-gpu 仅支持 CUDA，不支持 Ascend NPU，不要安装 faiss-gpu。
+
+**使用 NPU 加速（Ascend 910B 生产）**：
+```yaml
+clustering:
+  use_npu: true
+  npu_devices:           # 各 bucket 按顺序 round-robin 分配设备
+    - "npu:0"            # 单卡：2 个 bucket 都用 npu:0，串行
+  npu_chunk_size: 50000  # 分批 cdist 大小（控制显存峰值，50K → ~2.4GB/批）
+```
+
+多卡配置（2 个 bucket 各占一张卡，并行）：
+```yaml
+clustering:
+  use_npu: true
+  npu_devices:
+    - "npu:0"   # stage1_icon → npu:0
+    - "npu:1"   # stage2_illustration → npu:1
+```
+
+8 卡节点（仍是 2 个 bucket，自动 round-robin，npu:0/npu:1 各跑一个 bucket）：
+```yaml
+clustering:
+  use_npu: true
+  npu_devices: ["npu:0","npu:1","npu:2","npu:3","npu:4","npu:5","npu:6","npu:7"]
+  # 实际只用到 npu:0、npu:1，其余卡闲置；embed 阶段可同时用 num_devices: 8
+```
+
+**使用 CUDA GPU**：
+```yaml
+clustering:
+  use_npu: true          # 复用同一后端（torch.cdist 支持 cuda/npu）
+  npu_devices:
+    - "cuda:0"
+```
 
 ---
 
@@ -110,8 +152,9 @@ seed_selection/
   dedup_near.py      # Step 4：MinHash 近似去重
   svg_filter.py      # Step 5：SVG 复杂度过滤
   embed.py           # Step 6：Qwen3-Embedding，shard 输出
-  cluster.py         # Step 7：MiniBatchKMeans 聚类（可选 NPU）
-  kmeans_npu.py      # NPU/GPU 加速 KMeans（标准 Lloyd's，torch_npu）
+  cluster.py         # Step 7：KMeans 聚类（三档后端：MiniBatchKMeans / faiss / NPU）
+  kmeans_npu.py      # NPU/GPU 加速 KMeans（标准 Lloyd's，torch_npu/torch.cuda）
+  kmeans_faiss.py    # faiss-cpu 精确 KMeans（CPU BLAS 加速）
   sample.py          # Step 8：分层采样（200K HP + 800K anneal）
   analyze.py         # 质量报告生成
   main.py            # CLI 入口
@@ -137,8 +180,14 @@ seed_selection/
 
 ```bash
 pip install datasketch scikit-learn sentence-transformers transformers pyyaml loguru numpy
+
+# faiss-cpu（可选，CPU 精确 KMeans，5–15× 快于 MiniBatchKMeans）
+pip install faiss-cpu
+
 # NPU 加速（可选，需要 Ascend 环境）
 pip install torch torch_npu
+# CUDA GPU 只需 torch（无需 torch_npu）
+pip install torch
 ```
 
 ### 配置
@@ -149,13 +198,15 @@ pip install torch torch_npu
 input_paths:          # 6 个 JSONL 文件，img2svg 在 text2svg 之前
 output_root:          # 输出根目录
 embedding:
-  model_path:         # Qwen3-Embedding-0.6B 路径
+  model_path:         # Qwen3-Embedding-0.6B 或 Qwen3-Embedding-4B 路径
   device: cpu         # cpu | cuda | npu
 
-# NPU 加速聚类（可选）
+# 聚类后端（三选一，优先级：use_npu > use_faiss > 默认）
 clustering:
-  use_npu: false      # 改为 true 启用 NPU
-  npu_device: "npu:0"
+  use_npu: false      # true = NPU/CUDA 精确 KMeans（需要 torch + torch_npu）
+  use_faiss: false    # true = faiss-cpu 精确 KMeans（需要 pip install faiss-cpu）
+  npu_devices:        # use_npu=true 时生效；单卡填 ["npu:0"]，双卡填 ["npu:0","npu:1"]
+    - "npu:0"
 
 # 采样配比
 sampling:
@@ -348,10 +399,12 @@ clustering:
     stage1_icon: 12000          # ~2.25M 记录，平均 ~188 条/cluster
     stage2_illustration: 6000   # ~0.45M 记录，语义丰富，细粒度分区
   random_seed: 42
-  minibatch_size: 50000
-  use_npu: false                # true = torch_npu Lloyd's KMeans
-  npu_device: "npu:0"
-  npu_chunk_size: 50000         # 分批 cdist 控制显存
+  minibatch_size: 50000         # MiniBatchKMeans 每批大小（faiss/NPU 模式不生效）
+  use_npu: false                # true = torch_npu / CUDA 精确 Lloyd's KMeans
+  use_faiss: false              # true = faiss-cpu 精确 Lloyd's（use_npu=true 时忽略）
+  npu_devices:                  # use_npu=true 时生效，按 bucket 顺序 round-robin 分配
+    - "npu:0"                   # 单卡；多卡示例：["npu:0","npu:1"]
+  npu_chunk_size: 50000         # 分批 cdist 大小（控制显存峰值）
 
 sampling:
   total_pool_size: 1000000

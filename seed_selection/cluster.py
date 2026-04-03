@@ -73,14 +73,17 @@ def _run_kmeans(
     use_npu: bool = False,
     npu_device: str = "npu:0",
     npu_chunk_size: int = 50_000,
+    use_faiss: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    返回 (labels, centroids)。
+    返回 (labels, centroids)。后端优先级：use_npu > use_faiss > MiniBatchKMeans。
 
-    use_npu=True 时调用 kmeans_npu（标准 Lloyd's + torch_npu 加速）；
-    否则回退到 MiniBatchKMeans（sklearn CPU 实现）。
+    use_npu:   torch_npu Lloyd's（精确，NPU/GPU 加速）
+    use_faiss: faiss-cpu Lloyd's（精确，CPU BLAS，5–15× 快于 MiniBatch）
+    默认:      sklearn MiniBatchKMeans（近似，纯 CPU，无额外依赖）
     """
     k = min(k, len(embeddings))   # K 不得超过样本数
+
     if use_npu:
         logger.info(f"  KMeans(NPU) K={k}, n={len(embeddings):,}, device={npu_device}")
         from .kmeans_npu import kmeans_npu
@@ -91,6 +94,17 @@ def _run_kmeans(
             max_iter=100,
             random_seed=random_seed,
             chunk_size=npu_chunk_size,
+        )
+        return labels, centroids
+
+    if use_faiss:
+        logger.info(f"  KMeans(faiss-cpu) K={k}, n={len(embeddings):,}")
+        from .kmeans_faiss import kmeans_faiss
+        labels, centroids = kmeans_faiss(
+            embeddings, k,
+            n_init=3,
+            max_iter=100,
+            random_seed=random_seed,
         )
         return labels, centroids
 
@@ -118,6 +132,7 @@ def _cluster_domain_worker(args: tuple) -> tuple[str, int, int]:
     (domain, records_json, emb_bytes, emb_shape,
      k, random_seed, minibatch_size,
      use_npu, npu_device, npu_chunk_size,
+     use_faiss,
      tmp_path_str) = args
 
     records = [json.loads(r) for r in records_json]
@@ -126,6 +141,7 @@ def _cluster_domain_worker(args: tuple) -> tuple[str, int, int]:
     labels, centroids = _run_kmeans(
         emb_matrix, k, random_seed, minibatch_size,
         use_npu=use_npu, npu_device=npu_device, npu_chunk_size=npu_chunk_size,
+        use_faiss=use_faiss,
     )
     actual_k = int(labels.max()) + 1
     cluster_sizes = Counter(labels.tolist())
@@ -156,6 +172,7 @@ def run_cluster(
     use_npu: bool = False,
     npu_devices: list[str] | None = None,
     npu_chunk_size: int = 50_000,
+    use_faiss: bool = False,
 ) -> ClusterStats:
     """
     npu_devices: 每个 bucket worker 按顺序 round-robin 分配的 NPU 设备列表。
@@ -222,6 +239,7 @@ def run_cluster(
                 emb_matrix.shape,
                 k, random_seed, minibatch_size,
                 use_npu, assigned_device, npu_chunk_size,
+                use_faiss,
                 tmp_path,
             ))
             domain_order.append(domain)

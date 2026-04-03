@@ -114,7 +114,7 @@ def test_cluster_npu_mock(tmp_path, monkeypatch):
 
     import seed_selection.cluster as cluster_mod
     monkeypatch.setattr(cluster_mod, "_run_kmeans",
-                        lambda emb, k, seed, mb, use_npu, npu_device, npu_chunk_size:
+                        lambda emb, k, seed, mb, **kwargs:
                         mock_kmeans_npu(emb, k))
 
     run_cluster(meta, emb_dir, out,
