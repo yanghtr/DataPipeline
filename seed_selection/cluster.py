@@ -154,9 +154,16 @@ def run_cluster(
     minibatch_size: int = 50_000,
     num_workers: int = 1,
     use_npu: bool = False,
-    npu_device: str = "npu:0",
+    npu_devices: list[str] | None = None,
     npu_chunk_size: int = 50_000,
 ) -> ClusterStats:
+    """
+    npu_devices: 每个 bucket worker 按顺序 round-robin 分配的 NPU 设备列表。
+      - 单卡：["npu:0"]
+      - 双卡：["npu:0", "npu:1"]（2 个 bucket 各用 1 张卡，并行）
+      - 8 卡：["npu:0", ..., "npu:7"]（2 个 bucket 分别用 npu:0 / npu:1，其余空闲）
+    """
+    npu_devices = npu_devices or ["npu:0"]
     stats = ClusterStats()
 
     # 1. 加载所有 embedding（id → embedding）
@@ -203,13 +210,18 @@ def run_cluster(
 
             emb_matrix = np.vstack(valid_embs)
             tmp_path = os.path.join(tmp_dir, f"cluster_{domain}.jsonl")
+            # 按 bucket 顺序 round-robin 分配 NPU 设备（多卡并行）
+            bucket_idx = len(worker_args)
+            assigned_device = npu_devices[bucket_idx % len(npu_devices)]
+            if use_npu:
+                logger.info(f"[cluster] {domain} → {assigned_device}")
             worker_args.append((
                 domain,
                 [json.dumps(r, ensure_ascii=False) for r in valid_records],
                 emb_matrix.tobytes(),
                 emb_matrix.shape,
                 k, random_seed, minibatch_size,
-                use_npu, npu_device, npu_chunk_size,
+                use_npu, assigned_device, npu_chunk_size,
                 tmp_path,
             ))
             domain_order.append(domain)

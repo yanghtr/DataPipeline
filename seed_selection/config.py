@@ -39,7 +39,9 @@ class ClusterConfig:
     minibatch_size: int = 50_000
     # NPU 加速 KMeans（需要 torch_npu，关闭时回退到 MiniBatchKMeans）
     use_npu: bool = False
-    npu_device: str = "npu:0"
+    # 每个 bucket worker 按顺序从列表中取设备（round-robin）
+    # 单卡：["npu:0"]；双卡：["npu:0", "npu:1"]；8卡：["npu:0",...,"npu:7"]
+    npu_devices: list[str] = field(default_factory=lambda: ["npu:0"])
     npu_chunk_size: int = 50_000   # 分批 cdist 以避免显存溢出
 
 
@@ -103,7 +105,7 @@ def load_config(path: Path) -> PipelineConfig:
             random_seed=cl.get("random_seed", 42),
             minibatch_size=cl.get("minibatch_size", 50_000),
             use_npu=cl.get("use_npu", False),
-            npu_device=cl.get("npu_device", "npu:0"),
+            npu_devices=cl.get("npu_devices", ["npu:0"]),
             npu_chunk_size=cl.get("npu_chunk_size", 50_000),
         ),
         sampling=SamplingConfig(

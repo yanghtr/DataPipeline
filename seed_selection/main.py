@@ -114,7 +114,7 @@ def run_cluster(cfg: PipelineConfig, root: Path, **_) -> None:
         minibatch_size=cfg.clustering.minibatch_size,
         num_workers=cfg.num_workers,
         use_npu=cfg.clustering.use_npu,
-        npu_device=cfg.clustering.npu_device,
+        npu_devices=cfg.clustering.npu_devices,
         npu_chunk_size=cfg.clustering.npu_chunk_size,
     )
 

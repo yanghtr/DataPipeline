@@ -41,7 +41,10 @@ clustering:
   random_seed: 42
   minibatch_size: 50000    # MiniBatchKMeans 每批大小（NPU 模式下为 cdist 分批大小）
   use_npu: false           # 是否使用 NPU 加速 KMeans（需要 torch_npu）
-  npu_device: "npu:0"      # NPU 设备（多桶并行时各桶可指定不同设备）
+  npu_devices:             # 各 bucket worker 按顺序 round-robin 分配的设备
+    - "npu:0"              # 单卡写 1 条；8 卡写 8 条（2 个 bucket 分别用 npu:0 / npu:1，其余空闲）
+  # 8 卡示例（取消注释替换上方）：
+  # npu_devices: ["npu:0","npu:1","npu:2","npu:3","npu:4","npu:5","npu:6","npu:7"]
   npu_chunk_size: 50000    # NPU 模式下分批 cdist 的批大小（控制显存占用）
 
 sampling:

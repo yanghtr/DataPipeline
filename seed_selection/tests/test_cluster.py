@@ -121,7 +121,7 @@ def test_cluster_npu_mock(tmp_path, monkeypatch):
                 k_per_bucket={"stage1_icon": 5},
                 random_seed=42,
                 use_npu=True,
-                npu_device="npu:0")
+                npu_devices=["npu:0"])
 
     result = _read(out)
     assert len(result) == n
