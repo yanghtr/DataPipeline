@@ -1,6 +1,8 @@
 # 种子 Query 筛选流水线配置
 
 # 输入文件列表（img2svg 文件必须在 text2svg 之前，确保 exact dedup 时 img2svg 优先）
+# 注意：stage2/icon 的 instruction 与 stage1/icon 完全重复，
+# 在 exact dedup 阶段会被全量丢弃（first-come-wins），保留在列表中仅用于潜在的更新。
 input_paths:
   - /home/yanghaitao/Projects/Data/processed/SAgoge/stage1/icon/generation/img2svg/data_000000.jsonl
   - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/icon/generation/img2svg/data_000000.jsonl
@@ -12,7 +14,7 @@ input_paths:
 # 输出根目录
 output_root: /home/yanghaitao/Projects/Data/query_seed/SAgoge
 
-# SVG 复杂度过滤：去除 stage1_icon / stage2_icon 中 svg_len 最小的 N%（illustration 全保留）
+# SVG 复杂度过滤：去除 stage1_icon 中 svg_len 最小的 N%（illustration 全保留）
 svg_filter_bottom_pct: 0.10
 
 num_workers: 4             # extract / dedup_near / cluster 并行进程数
@@ -30,19 +32,24 @@ near_dedup:
   char_ngram: 5            # 字符级 n-gram（适合短文本）
   thresholds:
     stage1_icon: 0.8       # 短文本严格阈值
-    stage2_icon: 0.8
     stage2_illustration: 0.7   # 长文本宽松阈值
 
 clustering:
   k_per_bucket:
-    stage1_icon: 10000
-    stage2_icon: 2000
-    stage2_illustration: 3000
+    stage1_icon: 12000          # ~2.25M 记录，平均 ~188 条/cluster
+    stage2_illustration: 6000   # ~0.45M 记录，平均 ~75 条/cluster（语义空间更大，细粒度分区）
   random_seed: 42
-  minibatch_size: 50000    # MiniBatchKMeans 每批大小
+  minibatch_size: 50000    # MiniBatchKMeans 每批大小（NPU 模式下为 cdist 分批大小）
+  use_npu: false           # 是否使用 NPU 加速 KMeans（需要 torch_npu）
+  npu_device: "npu:0"      # NPU 设备（多桶并行时各桶可指定不同设备）
+  npu_chunk_size: 50000    # NPU 模式下分批 cdist 的批大小（控制显存占用）
 
 sampling:
   total_pool_size: 1000000
-  anneal_pool_size: 900000
-  high_priority_pool_size: 100000
+  anneal_pool_size: 800000           # 退火训练池（开源模型蒸馏）
+  high_priority_pool_size: 200000    # 高优先池（大模型蒸馏）
   random_seed: 42
+  # 显式覆盖 bucket 配额（不填则按数据量比例分配）
+  # illustration 数据量约占 17%，但语义复杂度更高、训练价值更大，手动提升到 30%
+  bucket_quota_overrides:
+    stage2_illustration: 300000      # 300K（约 30%），剩余 700K 自动分给 stage1_icon

@@ -113,6 +113,9 @@ def run_cluster(cfg: PipelineConfig, root: Path, **_) -> None:
         random_seed=cfg.clustering.random_seed,
         minibatch_size=cfg.clustering.minibatch_size,
         num_workers=cfg.num_workers,
+        use_npu=cfg.clustering.use_npu,
+        npu_device=cfg.clustering.npu_device,
+        npu_chunk_size=cfg.clustering.npu_chunk_size,
     )
 
 
@@ -124,6 +127,7 @@ def run_sample(cfg: PipelineConfig, root: Path, **_) -> None:
         total_pool_size=cfg.sampling.total_pool_size,
         high_priority_size=cfg.sampling.high_priority_pool_size,
         random_seed=cfg.sampling.random_seed,
+        bucket_quota_overrides=cfg.sampling.bucket_quota_overrides or None,
     )
 
 

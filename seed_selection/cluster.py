@@ -70,9 +70,30 @@ def _run_kmeans(
     k: int,
     random_seed: int,
     minibatch_size: int,
+    use_npu: bool = False,
+    npu_device: str = "npu:0",
+    npu_chunk_size: int = 50_000,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """返回 (labels, centroids)。"""
+    """
+    返回 (labels, centroids)。
+
+    use_npu=True 时调用 kmeans_npu（标准 Lloyd's + torch_npu 加速）；
+    否则回退到 MiniBatchKMeans（sklearn CPU 实现）。
+    """
     k = min(k, len(embeddings))   # K 不得超过样本数
+    if use_npu:
+        logger.info(f"  KMeans(NPU) K={k}, n={len(embeddings):,}, device={npu_device}")
+        from .kmeans_npu import kmeans_npu
+        labels, centroids = kmeans_npu(
+            embeddings, k,
+            device=npu_device,
+            n_init=3,
+            max_iter=100,
+            random_seed=random_seed,
+            chunk_size=npu_chunk_size,
+        )
+        return labels, centroids
+
     logger.info(f"  MiniBatchKMeans K={k}, n={len(embeddings):,}")
     km = MiniBatchKMeans(
         n_clusters=k,
@@ -94,12 +115,18 @@ def _cluster_domain_worker(args: tuple) -> tuple[str, int, int]:
     """
     _limit_blas_threads()   # 防止 OpenBLAS 在大机器上超过编译线程上限
 
-    domain, records_json, emb_bytes, emb_shape, k, random_seed, minibatch_size, tmp_path_str = args
+    (domain, records_json, emb_bytes, emb_shape,
+     k, random_seed, minibatch_size,
+     use_npu, npu_device, npu_chunk_size,
+     tmp_path_str) = args
 
     records = [json.loads(r) for r in records_json]
     emb_matrix = np.frombuffer(emb_bytes, dtype=np.float32).reshape(emb_shape)
 
-    labels, centroids = _run_kmeans(emb_matrix, k, random_seed, minibatch_size)
+    labels, centroids = _run_kmeans(
+        emb_matrix, k, random_seed, minibatch_size,
+        use_npu=use_npu, npu_device=npu_device, npu_chunk_size=npu_chunk_size,
+    )
     actual_k = int(labels.max()) + 1
     cluster_sizes = Counter(labels.tolist())
 
@@ -126,6 +153,9 @@ def run_cluster(
     random_seed: int = 42,
     minibatch_size: int = 50_000,
     num_workers: int = 1,
+    use_npu: bool = False,
+    npu_device: str = "npu:0",
+    npu_chunk_size: int = 50_000,
 ) -> ClusterStats:
     stats = ClusterStats()
 
@@ -179,6 +209,7 @@ def run_cluster(
                 emb_matrix.tobytes(),
                 emb_matrix.shape,
                 k, random_seed, minibatch_size,
+                use_npu, npu_device, npu_chunk_size,
                 tmp_path,
             ))
             domain_order.append(domain)

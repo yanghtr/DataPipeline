@@ -8,6 +8,7 @@ import pytest
 from seed_selection.sample import (
     _allocate_cluster_budget,
     _allocate_quota,
+    _select_high_priority,
     run_sample,
 )
 
@@ -114,3 +115,57 @@ def test_run_sample_no_overlap(tmp_path):
     hp_ids = ids("high_priority_pool.jsonl")
     anneal_ids = ids("anneal_pool.jsonl")
     assert hp_ids.isdisjoint(anneal_ids)
+
+
+def test_allocate_quota_with_overrides():
+    """overrides 覆盖指定 bucket，剩余按比例分配。"""
+    sizes = {"stage1_icon": 2250, "stage2_illustration": 450}
+    q = _allocate_quota(sizes, 1000, overrides={"stage2_illustration": 300})
+    assert q["stage2_illustration"] == 300
+    assert q["stage1_icon"] == 700
+    assert sum(q.values()) == 1000
+
+
+def test_allocate_quota_overrides_capped():
+    """overrides 超过 bucket 实际大小时，截断到 bucket 大小。"""
+    sizes = {"a": 100, "b": 900}
+    q = _allocate_quota(sizes, 1000, overrides={"a": 500})  # a 只有 100 条
+    assert q["a"] == 100   # 截断
+    assert q["b"] == 900
+    assert sum(q.values()) == 1000
+
+
+def test_select_high_priority_round_robin():
+    """Phase 2 round-robin：各 cluster 贡献条数应大体均衡。"""
+    # 4 个 cluster，各 10 条；要求选 16 条（Phase 1: 4 条 + Phase 2: 12 条）
+    n_clusters, n_per = 4, 10
+    pool = []
+    for cid in range(n_clusters):
+        for j in range(n_per):
+            pool.append({
+                "instruction": f"inst {cid}-{j}",
+                "_meta": {
+                    "id": f"r:{cid}:{j}",
+                    "bucket_key": "stage1_icon",
+                    "cluster_id": cid,
+                    "distance_to_centroid": float(j) / n_per,
+                },
+            })
+
+    hp = _select_high_priority(pool, high_priority_size=16)
+    assert len(hp) == 16
+
+    from collections import Counter
+    cluster_counts = Counter(r["_meta"]["cluster_id"] for r in hp)
+    # Round-robin 应使各 cluster 各贡献 4 条（16/4=4）
+    for cid in range(n_clusters):
+        assert cluster_counts[cid] == 4, f"cluster {cid} contributed {cluster_counts[cid]}"
+
+
+def test_run_sample_200k_800k_split(tmp_path):
+    """验证 200K/800K 默认配比的 anneal + high_priority == pool_1000k。"""
+    cluster_path = _make_cluster_assignments(tmp_path, n_per_cluster=10, n_clusters=4)
+    stats = run_sample(cluster_path, tmp_path,
+                       total_pool_size=40, high_priority_size=8, random_seed=42)
+    assert stats.pool_1000k == stats.anneal + stats.high_priority
+    assert stats.high_priority <= 8

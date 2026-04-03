@@ -17,7 +17,7 @@ from seed_selection.cluster import run_cluster
 from seed_selection.sample import run_sample
 
 
-THRESHOLDS = {"stage1_icon": 0.8, "stage2_icon": 0.8, "stage2_illustration": 0.7}
+THRESHOLDS = {"stage1_icon": 0.8, "stage2_illustration": 0.7}
 
 
 def test_full_pipeline(tmp_path, all_input_paths):
@@ -56,7 +56,7 @@ def test_full_pipeline(tmp_path, all_input_paths):
         meta_path=filtered,
         embed_dir=emb_dir,
         output_path=cluster_out,
-        k_per_bucket={"stage1_icon": 2, "stage2_icon": 2, "stage2_illustration": 2},
+        k_per_bucket={"stage1_icon": 2, "stage2_illustration": 2},
         random_seed=42,
     )
 
@@ -77,6 +77,7 @@ def test_full_pipeline(tmp_path, all_input_paths):
     assert (root / "high_priority_pool.jsonl").exists()
 
     # Verify _meta structure in final outputs
+    valid_domains = {"stage1_icon", "stage2_illustration"}
     for line in (root / "anneal_pool.jsonl").read_text().splitlines():
         if not line.strip():
             continue
@@ -88,3 +89,5 @@ def test_full_pipeline(tmp_path, all_input_paths):
         assert "cluster_id" in meta
         assert "distance_to_centroid" in meta
         assert "bucket_key" in meta
+        # stage2_icon 应已被 exact dedup 覆盖，不出现在输出中
+        assert meta.get("domain") in valid_domains, f"unexpected domain: {meta.get('domain')}"

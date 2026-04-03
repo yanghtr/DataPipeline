@@ -12,7 +12,7 @@ SOURCE_PRIORITY: dict[str, int] = {
     "text2svg": 1,
 }
 
-DOMAINS = ("stage1_icon", "stage2_icon", "stage2_illustration")
+DOMAINS = ("stage1_icon", "stage2_illustration")
 
 
 def make_id(source_file: str, line_no: int) -> str:
@@ -59,22 +59,18 @@ def write_jsonl(records: Iterable[dict], path: Path) -> int:
 
 def infer_domain(file_path: str) -> str:
     """
-    从文件路径推断 domain（3 桶分类）。
+    从文件路径推断 domain（两桶分类）。
 
-    路径中必须含 stage1/icon, stage2/icon 或 stage2/illustration 之一。
+    - stage2/illustration → "stage2_illustration"
+    - stage1/icon 或 stage2/icon → "stage1_icon"
+      （stage2_icon 的 instruction 在 exact dedup 中已被 stage1_icon 全量覆盖，
+       因此两者统一归为 stage1_icon 桶，不再单独建桶。）
     """
     p = file_path.replace("\\", "/")
     if "stage2/illustration" in p or "stage2\\illustration" in p:
         return "stage2_illustration"
-    if "stage2/icon" in p or "stage2\\icon" in p:
-        return "stage2_icon"
-    if "stage1/icon" in p or "stage1\\icon" in p:
-        return "stage1_icon"
-    # 兜底：尝试从文件名后缀推断
     if "illustration" in p:
         return "stage2_illustration"
-    if "stage2" in p:
-        return "stage2_icon"
     return "stage1_icon"
 
 

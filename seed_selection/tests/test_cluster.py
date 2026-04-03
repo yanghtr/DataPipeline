@@ -57,6 +57,7 @@ def test_cluster_assigns_all_records(tmp_path):
 
 
 def test_cluster_multi_domain(tmp_path):
+    """两桶：stage1_icon + stage2_illustration（stage2_icon 已被 exact dedup 覆盖）。"""
     ids_icon = [f"icon:{i}" for i in range(10)]
     ids_ill  = [f"ill:{i}"  for i in range(5)]
     all_ids  = ids_icon + ids_ill
@@ -78,6 +79,8 @@ def test_cluster_multi_domain(tmp_path):
     domains = {r["_meta"]["bucket_key"] for r in result}
     assert "stage1_icon" in domains
     assert "stage2_illustration" in domains
+    # stage2_icon 不应出现（已被合并到 stage1_icon）
+    assert "stage2_icon" not in domains
 
 
 def test_cluster_k_exceeds_samples(tmp_path):
@@ -90,3 +93,37 @@ def test_cluster_k_exceeds_samples(tmp_path):
     run_cluster(meta, emb_dir, out, k_per_bucket={"stage1_icon": 100}, random_seed=42)
     result = _read(out)
     assert len(result) == 3
+
+
+def test_cluster_npu_mock(tmp_path, monkeypatch):
+    """use_npu=True 时调用 kmeans_npu，mock 返回确定结果，不依赖真实 NPU。"""
+    n = 20
+    ids = [f"f:{i}" for i in range(n)]
+    records = [_rec(ids[i], f"text {i}", "stage1_icon") for i in range(n)]
+    meta = _write_meta(tmp_path, records)
+    emb_dir = _write_embeddings(tmp_path, ids, dim=16)
+    out = tmp_path / "cluster.jsonl"
+
+    import numpy as np
+
+    def mock_kmeans_npu(embeddings, k, **kwargs):
+        k = min(k, len(embeddings))
+        labels = np.arange(len(embeddings)) % k
+        centroids = np.zeros((k, embeddings.shape[1]), dtype=np.float32)
+        return labels.astype(np.int64), centroids
+
+    import seed_selection.cluster as cluster_mod
+    monkeypatch.setattr(cluster_mod, "_run_kmeans",
+                        lambda emb, k, seed, mb, use_npu, npu_device, npu_chunk_size:
+                        mock_kmeans_npu(emb, k))
+
+    run_cluster(meta, emb_dir, out,
+                k_per_bucket={"stage1_icon": 5},
+                random_seed=42,
+                use_npu=True,
+                npu_device="npu:0")
+
+    result = _read(out)
+    assert len(result) == n
+    for rec in result:
+        assert "cluster_id" in rec["_meta"]

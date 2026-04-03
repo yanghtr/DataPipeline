@@ -9,9 +9,10 @@ Step 1 — extract.py
   "instruction": str,   # user 侧 text content（原始，未清洗）
   "_meta": {
     "id":     str,      # "{domain}/{source}/{stem}:{line_no}"
-    "domain": str,      # "stage1_icon" | "stage2_icon" | "stage2_illustration"
+    "domain": str,      # "stage1_icon" | "stage2_illustration"
     "source": str,      # "img2svg" | "text2svg"
     "svg_len": int,     # assistant 侧 SVG 文本字符数（含 ``` 包裹）
+    "gt_svg": str,      # 原始 GT SVG 文本（含 ```svg 包裹），用于蒸馏后对比可视化
   }
 }
 """
@@ -115,10 +116,11 @@ def iter_records(
         yield {
             "instruction": instruction,
             "_meta": {
-                "id":     make_id(file_key, line_no),
-                "domain": domain,
-                "source": source,
+                "id":      make_id(file_key, line_no),
+                "domain":  domain,
+                "source":  source,
                 "svg_len": len(svg_text),
+                "gt_svg":  svg_text,   # 原始 GT SVG（含 ```svg 包裹），供蒸馏后对比可视化
             },
         }
 

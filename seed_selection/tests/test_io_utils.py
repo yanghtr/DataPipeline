@@ -6,7 +6,8 @@ def test_infer_domain_stage1_icon():
 
 
 def test_infer_domain_stage2_icon():
-    assert infer_domain("stage2/icon/generation/img2svg/data.jsonl") == "stage2_icon"
+    # stage2/icon 归并到 stage1_icon（exact dedup 后 stage2_icon 记录已被全量覆盖）
+    assert infer_domain("stage2/icon/generation/img2svg/data.jsonl") == "stage1_icon"
 
 
 def test_infer_domain_illustration():

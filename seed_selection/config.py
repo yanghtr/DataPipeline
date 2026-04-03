@@ -25,7 +25,6 @@ class NearDedupConfig:
     char_ngram: int = 5
     thresholds: dict[str, float] = field(default_factory=lambda: {
         "stage1_icon": 0.8,
-        "stage2_icon": 0.8,
         "stage2_illustration": 0.7,
     })
 
@@ -33,20 +32,26 @@ class NearDedupConfig:
 @dataclass
 class ClusterConfig:
     k_per_bucket: dict[str, int] = field(default_factory=lambda: {
-        "stage1_icon": 10_000,
-        "stage2_icon": 2_000,
-        "stage2_illustration": 3_000,
+        "stage1_icon": 12_000,
+        "stage2_illustration": 6_000,
     })
     random_seed: int = 42
     minibatch_size: int = 50_000
+    # NPU 加速 KMeans（需要 torch_npu，关闭时回退到 MiniBatchKMeans）
+    use_npu: bool = False
+    npu_device: str = "npu:0"
+    npu_chunk_size: int = 50_000   # 分批 cdist 以避免显存溢出
 
 
 @dataclass
 class SamplingConfig:
     total_pool_size: int = 1_000_000
-    anneal_pool_size: int = 900_000
-    high_priority_pool_size: int = 100_000
+    anneal_pool_size: int = 800_000
+    high_priority_pool_size: int = 200_000
     random_seed: int = 42
+    # 显式覆盖 bucket 配额（不填则按数据量比例分配）
+    # 例：{"stage2_illustration": 300000} 将 illustration 提升到 300K，剩余 700K 分配给 stage1_icon
+    bucket_quota_overrides: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -87,24 +92,26 @@ def load_config(path: Path) -> PipelineConfig:
             char_ngram=nd.get("char_ngram", 5),
             thresholds=nd.get("thresholds", {
                 "stage1_icon": 0.8,
-                "stage2_icon": 0.8,
                 "stage2_illustration": 0.7,
             }),
         ),
         clustering=ClusterConfig(
             k_per_bucket=cl.get("k_per_bucket", {
-                "stage1_icon": 10_000,
-                "stage2_icon": 2_000,
-                "stage2_illustration": 3_000,
+                "stage1_icon": 12_000,
+                "stage2_illustration": 6_000,
             }),
             random_seed=cl.get("random_seed", 42),
             minibatch_size=cl.get("minibatch_size", 50_000),
+            use_npu=cl.get("use_npu", False),
+            npu_device=cl.get("npu_device", "npu:0"),
+            npu_chunk_size=cl.get("npu_chunk_size", 50_000),
         ),
         sampling=SamplingConfig(
             total_pool_size=sa.get("total_pool_size", 1_000_000),
-            anneal_pool_size=sa.get("anneal_pool_size", 900_000),
-            high_priority_pool_size=sa.get("high_priority_pool_size", 100_000),
+            anneal_pool_size=sa.get("anneal_pool_size", 800_000),
+            high_priority_pool_size=sa.get("high_priority_pool_size", 200_000),
             random_seed=sa.get("random_seed", 42),
+            bucket_quota_overrides=sa.get("bucket_quota_overrides", {}),
         ),
         num_workers=raw.get("num_workers", 4),
     )
