@@ -148,12 +148,24 @@ def _assign_labels(
     chunk_size: int,
 ) -> "torch.Tensor":
     """
-    分批计算 X 到 centroids 的距离，返回每行最近质心索引。
+    分批计算 X 到 centroids 的 L2 距离，返回每行最近质心索引。
+
+    不使用 torch.cdist：torch_npu 对 cdist 的 MM 优化路径支持不稳定，
+    部分版本会退化为 expand-based 实现（中间产生 chunk×K×D 张量，
+    50K×12K×256×4B = 614GB → 立即 OOM）。
+
+    改用显式公式：||a-b||² = ||a||² - 2·a@b.T + ||b||²
+    中间结果只有 (chunk, K) = 50K×12K×4B = 2.4GB，无 (chunk,K,D) 展开。
     峰值显存：chunk × K × 4B（chunk=50K, K=12K → 2.4GB）
     """
+    import torch
+    c_norm = (centroids ** 2).sum(dim=1)   # (K,)，常量，整个循环只算一次
     labels = []
     for i in range(0, len(X), chunk_size):
-        d = torch.cdist(X[i:i + chunk_size], centroids)  # (chunk, K)
+        x_chunk = X[i:i + chunk_size]                          # (chunk, D)
+        x_norm = (x_chunk ** 2).sum(dim=1, keepdim=True)      # (chunk, 1)
+        # (chunk, K)：||x||² - 2·x@C.T + ||C||²，无 (chunk,K,D) 展开
+        d = x_norm + c_norm.unsqueeze(0) - 2.0 * (x_chunk @ centroids.T)
         labels.append(d.argmin(dim=1))
     return torch.cat(labels)  # (N,)
 
