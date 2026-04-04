@@ -1,0 +1,23 @@
+# SVG 蒸馏流水线配置
+
+# ── API ─────────────────────────────────────────────────────────────────────
+# 完整 endpoint URL，包含路径 /v1/chat/completions
+# 本地 vLLM：http://localhost:8000/v1/chat/completions
+# OpenAI：   https://api.openai.com/v1/chat/completions
+url: "http://localhost:8000/v1/chat/completions"
+api_key: "your-api-key-here"
+model: "your-model-name"
+
+timeout: 120.0       # 单次请求超时秒数
+max_retries: 3       # 429 / 5xx / Timeout / ConnectionError 最大重试次数
+ssl_verify: true     # 本地 vLLM 使用自签名证书时改为 false
+log_user: "svg_distill"
+
+# ── 路径 ────────────────────────────────────────────────────────────────────
+input_path: "/home/yanghaitao/Projects/Data/query_seed/SAgoge/high_priority_pool.jsonl"
+output_path: "/home/yanghaitao/Projects/Data/distillation/SAgoge/svg_responses.jsonl"
+call_log_path: "logs/api_calls.jsonl"   # 每次原始 API 调用明细（ts/model/tokens/status）
+
+# ── 运行 ────────────────────────────────────────────────────────────────────
+num_workers: 16    # 并发线程数（I/O bound，推荐 16–32）
+resume: true       # 断点续跑：跳过输出文件中已有 id 的记录
