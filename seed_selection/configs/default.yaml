@@ -4,28 +4,28 @@
 # 注意：stage2/icon 的 instruction 与 stage1/icon 完全重复，
 # 在 exact dedup 阶段会被全量丢弃（first-come-wins），保留在列表中仅用于潜在的更新。
 input_paths:
-  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage1/icon/generation/img2svg/data_000000.jsonl
-  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/icon/generation/img2svg/data_000000.jsonl
-  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/illustration/img2svg/data_000000.jsonl
-  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage1/icon/generation/text2svg/data_000000.jsonl
-  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/icon/generation/text2svg/data_000000.jsonl
-  - /home/yanghaitao/Projects/Data/processed/SAgoge/stage2/illustration/text2svg/data_000000.jsonl
+  - /cache/Data/SAgoge/processed/stage1/icon/generation/img2svg/data_000000.jsonl
+  - /cache/Data/SAgoge/processed/stage2/icon/generation/img2svg/data_000000.jsonl
+  - /cache/Data/SAgoge/processed/stage2/illustration/img2svg/data_000000.jsonl
+  - /cache/Data/SAgoge/processed/stage1/icon/generation/text2svg/data_000000.jsonl
+  - /cache/Data/SAgoge/processed/stage2/icon/generation/text2svg/data_000000.jsonl
+  - /cache/Data/SAgoge/processed/stage2/illustration/text2svg/data_000000.jsonl
 
 # 输出根目录
-output_root: /home/yanghaitao/Projects/Data/query_seed/SAgoge
+output_root: /cache/Data/SAgoge/query_seed
 
 # SVG 复杂度过滤：去除 stage1_icon 中 svg_len 最小的 N%（illustration 全保留）
 svg_filter_bottom_pct: 0.10
 
-num_workers: 4             # extract / dedup_near / cluster 并行进程数
+num_workers: 128             # extract / dedup_near / cluster 并行进程数
 
 embedding:
-  model_path: /home/yanghaitao/Projects/CKPT/Qwen3-Embedding-0.6B
+  model_path: /cache/ckpt/Qwen3-Embedding-4B
   dimension: 256
-  batch_size: 16           # CPU 默认；GPU 建议 256
-  device: cpu              # cpu | cuda | npu
+  batch_size: 256           # CPU 默认；GPU 建议 256
+  device: npu              # cpu | cuda | npu
   shard_size: 100000       # 每个 shard 的样本数
-  num_devices: 1           # GPU/NPU 卡数（CPU 模式固定为 1；8 卡 NPU 设为 8）
+  num_devices: 8           # GPU/NPU 卡数（CPU 模式固定为 1；8 卡 NPU 设为 8）
 
 near_dedup:
   num_perm: 128            # MinHash 排列数（影响精度与速度）
@@ -40,10 +40,11 @@ clustering:
     stage2_illustration: 6000   # ~0.45M 记录，平均 ~75 条/cluster（语义空间更大，细粒度分区）
   random_seed: 42
   minibatch_size: 50000    # MiniBatchKMeans 每批大小（NPU 模式下为 cdist 分批大小）
-  use_npu: false           # 是否使用 NPU 加速 KMeans（需要 torch_npu）
+  use_npu: true           # 是否使用 NPU 加速 KMeans（需要 torch_npu）
   use_faiss: false         # 是否使用 faiss-cpu 精确 KMeans（需要 faiss-cpu；use_npu 优先）
   npu_devices:             # 各 bucket worker 按顺序 round-robin 分配的设备
     - "npu:0"              # 单卡写 1 条；8 卡写 8 条（2 个 bucket 分别用 npu:0 / npu:1，其余空闲）
+    - "npu:1"
   # 8 卡示例（取消注释替换上方）：
   # npu_devices: ["npu:0","npu:1","npu:2","npu:3","npu:4","npu:5","npu:6","npu:7"]
   npu_chunk_size: 50000    # NPU 模式下分批 cdist 的批大小（控制显存占用）

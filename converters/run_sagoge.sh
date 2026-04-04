@@ -5,8 +5,8 @@
 
 set -euo pipefail
 
-RAW_ROOT="/home/yanghaitao/Projects/Data/raw/SAgoge"
-PROCESSED_ROOT="/home/yanghaitao/Projects/Data/processed/SAgoge"
+RAW_ROOT="/cache/Data/SAgoge/raw/"
+PROCESSED_ROOT="/cache/Data/SAgoge/processed/"
 SCRIPT="$(dirname "$0")/convert_sagoge.py"
 TRAIN_MODE="sft"
 IMAGE_ROOT="$RAW_ROOT"
