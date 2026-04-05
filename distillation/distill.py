@@ -87,7 +87,7 @@ def run_distill(
 
         result: dict = {"id": rec_id, "instruction": instruction}
         try:
-            response = call_chat_completion(
+            resp_data = call_chat_completion(
                 url=cfg.url,
                 api_key=cfg.api_key,
                 model=cfg.model,
@@ -99,11 +99,29 @@ def run_distill(
                 log_user=cfg.log_user,
                 result_log_path=call_log_path,
             )
-            result.update(status="ok", response=response, error=None)
+            content: str = resp_data["choices"][0]["message"]["content"]
+            usage: dict = resp_data.get("usage", {})
+            result.update(
+                status="ok",
+                response=content,
+                model=resp_data.get("model", cfg.model),
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                finish_reason=resp_data["choices"][0].get("finish_reason"),
+                error=None,
+            )
             with count_lock:
                 ok_count += 1
         except Exception as exc:
-            result.update(status="error", response=None, error=str(exc))
+            result.update(
+                status="error",
+                response=None,
+                model=cfg.model,
+                prompt_tokens=None,
+                completion_tokens=None,
+                finish_reason=None,
+                error=str(exc),
+            )
             logger.warning(f"[distill] 失败 id={rec_id}: {exc}")
             with count_lock:
                 err_count += 1

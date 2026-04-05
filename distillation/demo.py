@@ -35,7 +35,7 @@ if __name__ == "__main__":
         # 纯文本 SVG 蒸馏请求（使用标准 SVG prompt 模板）
         user_content = build_svg_user_content(TEXT)
 
-    result = call_chat_completion(
+    resp = call_chat_completion(
         url=URL,
         api_key=API_KEY,
         model=MODEL,
@@ -43,4 +43,4 @@ if __name__ == "__main__":
         system=SVG_SYSTEM_PROMPT,
         result_log_path=RESULT_LOG,
     )
-    print(result)
+    print(resp["choices"][0]["message"]["content"])

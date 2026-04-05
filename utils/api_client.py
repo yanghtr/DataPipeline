@@ -4,13 +4,14 @@
 使用方式：
     from utils.api_client import call_chat_completion, text_content, image_text_content
 
-    result = call_chat_completion(
+    resp = call_chat_completion(
         url="http://localhost:8000/v1/chat/completions",
         api_key="token",
         model="your-model",
         user_content=text_content("Draw a red circle"),
         system="You are an SVG expert.",
     )
+    content = resp["choices"][0]["message"]["content"]
 """
 
 from __future__ import annotations
@@ -47,9 +48,14 @@ def call_chat_completion(
     ssl_verify: bool = True,
     log_user: str = "distill",
     result_log_path: Path | None = Path("logs/api_calls.jsonl"),
-) -> str:
+) -> dict:
     """
-    调用 OpenAI-compatible chat completions，返回第一个 choice 的 content 字符串。
+    调用 OpenAI-compatible chat completions，返回完整的 API 响应 dict。
+
+    返回值即 API 原始 JSON，调用方自行提取所需字段，例如：
+        resp = call_chat_completion(...)
+        content = resp["choices"][0]["message"]["content"]
+        usage   = resp.get("usage", {})
 
     Args:
         url:             完整 endpoint，如 "http://host/v1/chat/completions"
@@ -61,14 +67,14 @@ def call_chat_completion(
         max_retries:     最大重试次数（429/5xx/Timeout/ConnectionError）
         ssl_verify:      False 用于自签名证书的本地 vLLM
         log_user:        传给 log_completion 的 user 字段
-        result_log_path: 每次调用结果追加到此文件（None 则不记录）
+        result_log_path: 每次调用结果（含输入 query 和完整响应）追加到此文件，None 则不记录
 
     Returns:
-        模型回复的文本内容。
+        API 原始响应 dict（OpenAI chat completions 格式）。
 
     Raises:
-        requests.exceptions.HTTPError:      非 2xx 且不可重试时
-        requests.exceptions.Timeout:        重试耗尽后仍超时
+        requests.exceptions.HTTPError:       非 2xx 且不可重试时
+        requests.exceptions.Timeout:         重试耗尽后仍超时
         requests.exceptions.ConnectionError: 重试耗尽后仍连接失败
     """
     messages: list[dict] = []
@@ -106,8 +112,7 @@ def call_chat_completion(
                 continue
 
             resp.raise_for_status()
-            data = resp.json()
-            content: str = data["choices"][0]["message"]["content"]
+            data: dict = resp.json()
 
             # 外部调用日志（失败不影响主流程）
             if _ext_log_completion:
@@ -122,10 +127,16 @@ def call_chat_completion(
                     logger.debug(f"[api] log_completion failed (ignored): {log_err}")
 
             _append_call_log(
-                result_log_path, url, model, "ok",
-                data.get("usage", {}), error=None,
+                result_log_path,
+                url=url,
+                model=model,
+                status="ok",
+                user_content=user_content,
+                system=system,
+                response_data=data,
+                error=None,
             )
-            return content
+            return data
 
         except requests.exceptions.Timeout as exc:
             last_exc = exc
@@ -145,19 +156,37 @@ def call_chat_completion(
 
         except requests.exceptions.HTTPError as exc:
             last_exc = exc
-            status = resp.status_code if resp is not None else 0
+            status_code = resp.status_code if resp is not None else 0
             # 不可重试的客户端错误，立即放弃
-            if status in _NON_RETRYABLE_STATUS or attempt == max_retries:
-                _append_call_log(result_log_path, url, model, "error", {}, error=str(exc))
+            if status_code in _NON_RETRYABLE_STATUS or attempt == max_retries:
+                _append_call_log(
+                    result_log_path,
+                    url=url,
+                    model=model,
+                    status="error",
+                    user_content=user_content,
+                    system=system,
+                    response_data=None,
+                    error=str(exc),
+                )
                 raise
             delay = 2 ** attempt
             logger.warning(
-                f"[api] HTTPError {status}, retry {attempt + 1}/{max_retries} after {delay}s"
+                f"[api] HTTPError {status_code}, retry {attempt + 1}/{max_retries} after {delay}s"
             )
             time.sleep(delay)
 
     # 重试全部耗尽
-    _append_call_log(result_log_path, url, model, "error", {}, error=str(last_exc))
+    _append_call_log(
+        result_log_path,
+        url=url,
+        model=model,
+        status="error",
+        user_content=user_content,
+        system=system,
+        response_data=None,
+        error=str(last_exc),
+    )
     raise last_exc  # type: ignore[misc]
 
 
@@ -196,26 +225,62 @@ def image_text_content(
 # ── 内部工具 ──────────────────────────────────────────────────────────────────
 
 
+def _extract_log_query(user_content: list[dict]) -> tuple[str, list[dict]]:
+    """
+    从 content items 中提取可读信息用于日志记录。
+
+    Returns:
+        query_text: 所有 text item 拼接的文本
+        images:     每个 image item 的摘要（记录 format，不记录 base64 数据）
+    """
+    texts: list[str] = []
+    images: list[dict] = []
+    for item in user_content:
+        if item.get("type") == "text":
+            texts.append(item.get("text", ""))
+        elif item.get("type") == "image_url":
+            url_str: str = item.get("image_url", {}).get("url", "")
+            # 提取 MIME type，不记录 base64 数据本身
+            fmt = url_str.split(";")[0].replace("data:", "") if url_str.startswith("data:") else "unknown"
+            images.append({"type": "image", "format": fmt})
+    return "\n".join(texts), images
+
+
 def _append_call_log(
     path: Path | None,
     url: str,
     model: str,
     status: str,
-    usage: dict,
+    user_content: list[dict],
+    system: str | None,
+    response_data: dict | None,
     error: str | None,
 ) -> None:
-    """将单次调用结果追加到 JSONL 日志文件（失败时静默忽略）。"""
+    """
+    将单次调用的完整信息追加到 JSONL 日志文件（失败时静默忽略）。
+
+    记录内容：
+      - ts / url / model / status
+      - query: user 消息的文本内容
+      - images: image item 摘要（format，无 base64）
+      - system: system prompt（如有）
+      - response: 完整 API 响应 dict（status=ok 时）
+      - error: 错误信息字符串（status=error 时）
+    """
     if path is None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        record = {
+        query_text, images = _extract_log_query(user_content)
+        record: dict = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "url": url,
             "model": model,
             "status": status,
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
+            "system": system,
+            "query": query_text,
+            "images": images or None,       # None 表示纯文本请求
+            "response": response_data,      # 完整响应（含 choices / usage / id）
             "error": error,
         }
         with open(path, "a", encoding="utf-8") as f:

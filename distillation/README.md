@@ -93,7 +93,7 @@ log_user: "svg_distill"
 
 input_path: "/path/to/high_priority_pool.jsonl"
 output_path: "/path/to/svg_responses.jsonl"
-call_log_path: "logs/api_calls.jsonl"   # 每次调用明细
+call_log_path: "logs/api_calls.jsonl"   # 每次调用完整记录（含 query 和响应）
 
 num_workers: 16    # 并发线程数（推荐 16–32）
 resume: true       # 断点续跑
@@ -105,35 +105,76 @@ resume: true       # 断点续跑
 
 ### 蒸馏结果（`output_path`）
 
-每行一条 JSON：
+每行一条 JSON，成功时：
 
 ```json
-{"id": "stage1_icon/text2svg/data_000000:312",
- "instruction": "Draw an orange circle...",
- "status": "ok",
- "response": "<svg xmlns=...>...</svg>",
- "error": null}
+{
+  "id": "stage1_icon/text2svg/data_000000:312",
+  "instruction": "Draw an orange circle...",
+  "status": "ok",
+  "response": "<svg xmlns=...>...</svg>",
+  "model": "your-model",
+  "prompt_tokens": 42,
+  "completion_tokens": 512,
+  "finish_reason": "stop",
+  "error": null
+}
 ```
 
 失败时：
 
 ```json
-{"id": "...",
- "instruction": "...",
- "status": "error",
- "response": null,
- "error": "HTTPError: 500 Internal Server Error"}
+{
+  "id": "...",
+  "instruction": "...",
+  "status": "error",
+  "response": null,
+  "model": "your-model",
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "finish_reason": null,
+  "error": "HTTPError: 500 Internal Server Error"
+}
 ```
 
 ### API 调用明细（`call_log_path`）
 
-每次调用追加一条（成功或失败均记录）：
+每次调用追加一条，**包含完整输入和输出**，用于事后校验和审计。
+
+成功时：
 
 ```json
-{"ts": "2026-04-04T10:00:00+00:00", "url": "http://...",
- "model": "your-model", "status": "ok",
- "prompt_tokens": 42, "completion_tokens": 512, "error": null}
+{
+  "ts": "2026-04-05T08:00:00+00:00",
+  "url": "http://localhost:8000/v1/chat/completions",
+  "model": "your-model",
+  "status": "ok",
+  "system": "You are an expert SVG code generator...",
+  "query": "Generate an SVG that depicts the following:\n\nDraw an orange circle...",
+  "images": null,
+  "response": {
+    "id": "chatcmpl-xxx",
+    "model": "your-model",
+    "choices": [{"message": {"role": "assistant", "content": "<svg>...</svg>"}, "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 42, "completion_tokens": 512, "total_tokens": 554}
+  },
+  "error": null
+}
 ```
+
+图文请求时 `images` 字段记录图片格式摘要（**不存 base64 数据**，避免日志膨胀）：
+
+```json
+{
+  "images": [{"type": "image", "format": "image/png"}],
+  ...
+}
+```
+
+失败时 `response` 为 `null`，`error` 为错误信息字符串。
+
+> **注意**：call log 包含完整响应（SVG 内容），单条记录可能较大（数 KB）。
+> 200K 条全量跑完后文件大小约 1–10 GB，按需保留。
 
 ---
 
@@ -167,22 +208,31 @@ TEXT  = "Generate an SVG similar to this image"
 ```
 
 图片会被 base64 编码，以 `data:image/png;base64,...` 格式内联在请求中。
+call log 中只记录图片的 MIME type（如 `image/png`），不记录 base64 数据。
 批量蒸馏（App 2）当前仅使用文本 instruction，图文支持可在 `prompt.py` 中扩展。
 
 ---
 
 ## 通用 API 调用器（`utils/api_client.py`）
 
-若要在其他任务中直接调用 API，可复用：
+`call_chat_completion` 返回**完整 API 响应 dict**，内容提取由调用方负责：
 
 ```python
 from utils.api_client import call_chat_completion, text_content, image_text_content
 
-result = call_chat_completion(
+resp = call_chat_completion(
     url="http://host/v1/chat/completions",
     api_key="token",
     model="model",
     user_content=text_content("Hello"),
     system="You are a helpful assistant.",
 )
+
+# 调用方自行提取所需字段
+content      = resp["choices"][0]["message"]["content"]
+finish_reason = resp["choices"][0]["finish_reason"]
+usage        = resp.get("usage", {})
 ```
+
+这样设计的原因：不同任务可能需要不同字段（content / usage / finish_reason / id），
+由调用方决定提取逻辑，调用器本身保持无业务逻辑。
