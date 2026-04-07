@@ -18,6 +18,13 @@ input_path: "/home/yanghaitao/Projects/Data/query_seed/SAgoge/high_priority_pool
 output_path: "/home/yanghaitao/Projects/Data/distillation/SAgoge/svg_responses.jsonl"
 call_log_path: "logs/api_calls.jsonl"   # 每次原始 API 调用明细（ts/model/tokens/status）
 
+# ── 生成参数（透传到 API payload）──────────────────────────────────────────
+# 空 dict {} = 完全使用模型默认值（Gemini 官方建议不修改默认参数）
+# 如需覆盖，直接在下方添加字段，如：
+#   temperature: 0.2
+#   max_tokens: 8192
+generation_params: {}
+
 # ── 运行 ────────────────────────────────────────────────────────────────────
 num_workers: 16    # 并发线程数（I/O bound，推荐 16–32）
 resume: true       # 断点续跑：跳过输出文件中已有 id 的记录

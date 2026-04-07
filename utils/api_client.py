@@ -27,7 +27,7 @@ from loguru import logger
 
 # log_completion 是内部代码，未提供时自动降级为 no-op
 try:
-    from local_api_logger import log_completion as _ext_log_completion  # type: ignore
+    from utils.local_api_logger import log_completion as _ext_log_completion  # type: ignore
 except ImportError:
     _ext_log_completion = None
 
@@ -48,6 +48,7 @@ def call_chat_completion(
     ssl_verify: bool = True,
     log_user: str = "distill",
     result_log_path: Path | None = Path("logs/api_calls.jsonl"),
+    extra_params: dict | None = None,
 ) -> dict:
     """
     调用 OpenAI-compatible chat completions，返回完整的 API 响应 dict。
@@ -68,6 +69,8 @@ def call_chat_completion(
         ssl_verify:      False 用于自签名证书的本地 vLLM
         log_user:        传给 log_completion 的 user 字段
         result_log_path: 每次调用结果（含输入 query 和完整响应）追加到此文件，None 则不记录
+        extra_params:    透传到 payload 的额外参数，如 {"temperature": 0.2, "max_tokens": 8192}
+                         会直接 merge 进请求 body，可覆盖或扩展任何 API 支持的字段
 
     Returns:
         API 原始响应 dict（OpenAI chat completions 格式）。
@@ -82,7 +85,9 @@ def call_chat_completion(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": user_content})
 
-    payload = {"model": model, "messages": messages}
+    payload: dict = {"model": model, "messages": messages}
+    if extra_params:
+        payload.update(extra_params)
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",

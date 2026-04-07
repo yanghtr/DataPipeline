@@ -23,6 +23,13 @@ MODEL   = "your-model-name"
 TEXT  = "Draw a simple red circle with a blue border"
 IMAGE = None  # 如需图文请求，填本地图片路径，如 "/path/to/ref.png"
 
+# 生成参数（透传到 API payload，None 则使用模型默认值）
+GENERATION_PARAMS = {
+    "temperature": 0.7,
+    "max_tokens": 8192,
+    "top_p": 0.95,
+}
+
 # 调用结果保存路径（None 则不保存到文件）
 RESULT_LOG = Path("logs/demo_calls.jsonl")
 # ─────────────────────────────────────────────────────────────────────────────
@@ -42,5 +49,6 @@ if __name__ == "__main__":
         user_content=user_content,
         system=SVG_SYSTEM_PROMPT,
         result_log_path=RESULT_LOG,
+        extra_params=GENERATION_PARAMS,
     )
     print(resp["choices"][0]["message"]["content"])

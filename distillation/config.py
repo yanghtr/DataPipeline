@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -15,14 +15,18 @@ class DistillConfig:
     api_key: str
     model: str
     timeout: float = 120.0
-    max_retries: int = 3
-    ssl_verify: bool = True           # 本地 vLLM 自签名证书时设为 false
+    max_retries: int = 50
+    ssl_verify: bool = False           # 本地 vLLM 自签名证书时设为 false
     log_user: str = "svg_distill"
 
     # ── 路径 ─────────────────────────────────────────────────────────────────
     input_path: str = ""              # 种子 JSONL（high_priority_pool.jsonl 等）
     output_path: str = "distillation_output.jsonl"   # 蒸馏结果写出路径
     call_log_path: str = "logs/api_calls.jsonl"      # 每次原始 API 调用记录
+
+    # ── 生成参数（透传到 API payload）────────────────────────────────────────
+    generation_params: dict = field(default_factory=dict)
+    # 示例：{"temperature": 0.2, "max_tokens": 8192, "top_p": 0.95}
 
     # ── 运行 ─────────────────────────────────────────────────────────────────
     num_workers: int = 16             # 并发线程数（I/O bound，16–32 通常足够）

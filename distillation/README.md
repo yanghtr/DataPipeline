@@ -95,6 +95,9 @@ input_path: "/path/to/high_priority_pool.jsonl"
 output_path: "/path/to/svg_responses.jsonl"
 call_log_path: "logs/api_calls.jsonl"   # 每次调用完整记录（含 query 和响应）
 
+# 生成参数：{} = 完全使用模型默认值
+generation_params: {}
+
 num_workers: 16    # 并发线程数（推荐 16–32）
 resume: true       # 断点续跑
 ```
@@ -178,6 +181,31 @@ resume: true       # 断点续跑
 
 ---
 
+## 生成参数（`generation_params`）
+
+`generation_params` 下的字段直接 merge 进 API 请求 payload。
+
+**不想设置任何参数（使用模型默认值）**：
+
+```yaml
+generation_params: {}   # 空 dict，不向 payload 添加任何字段
+```
+
+也可以直接删掉 `generation_params` 字段，效果等同（dataclass 默认值为空 dict）。
+
+> Gemini 官方建议不修改默认参数，SVG 蒸馏场景使用 `{}` 即可。
+
+**需要覆盖参数时**，直接在下方添加字段：
+
+```yaml
+generation_params:
+  temperature: 0.2
+  max_tokens: 8192
+  top_p: 0.95
+```
+
+---
+
 ## Retry 策略
 
 | 错误类型 | 行为 |
@@ -226,13 +254,17 @@ resp = call_chat_completion(
     model="model",
     user_content=text_content("Hello"),
     system="You are a helpful assistant.",
+    extra_params={"temperature": 0.2, "max_tokens": 8192},  # 透传任意 API 参数
 )
 
 # 调用方自行提取所需字段
-content      = resp["choices"][0]["message"]["content"]
+content       = resp["choices"][0]["message"]["content"]
 finish_reason = resp["choices"][0]["finish_reason"]
-usage        = resp.get("usage", {})
+usage         = resp.get("usage", {})
 ```
+
+`extra_params` 直接 merge 进请求 payload，支持任何模型接受的字段（temperature、max_tokens、
+top_p、seed、stop、frequency_penalty 等），无需修改调用器代码。
 
 这样设计的原因：不同任务可能需要不同字段（content / usage / finish_reason / id），
 由调用方决定提取逻辑，调用器本身保持无业务逻辑。

@@ -98,6 +98,7 @@ def run_distill(
                 ssl_verify=cfg.ssl_verify,
                 log_user=cfg.log_user,
                 result_log_path=call_log_path,
+                extra_params=cfg.generation_params or None,
             )
             content: str = resp_data["choices"][0]["message"]["content"]
             usage: dict = resp_data.get("usage", {})
