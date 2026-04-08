@@ -59,7 +59,7 @@ python visualization/distillation/viewer.py --port 7861
 
 ## 输入文件格式
 
-工具兼容两种 JSONL 格式：
+工具支持两种 JSONL 格式，可混用（例如第一列加载 query seed 作为原始基线，后续列加载不同模型的蒸馏结果）。
 
 ### 1. 蒸馏输出格式（`distillation/` 模块产出）
 
@@ -68,19 +68,32 @@ python visualization/distillation/viewer.py --port 7861
   "id": "stage1_icon/text2svg/data_000000:312",
   "instruction": "Draw an orange circle...",
   "status": "ok",
-  "response": "```svg\n<svg ...>...</svg>\n```",
+  "response": "```svg\n<svg xmlns=\"...\" viewBox=\"...\">...</svg>\n```",
   "model": "your-model",
-  ...
+  "prompt_tokens": 42,
+  "completion_tokens": 512,
+  "finish_reason": "stop",
+  "error": null
 }
 ```
 
-SVG 从 `response` 字段提取，自动剥除 ` ```svg ... ``` ` markdown fence。
+- **id**：顶层 `id` 字段
+- **SVG**：从 `response` 字段提取，自动剥除 ` ```svg ... ``` ` markdown fence
 
-### 2. Canonical JSONL 格式
+### 2. Query seed 格式（种子筛选产出，`high_priority_pool.jsonl` 等）
 
-标准 `meta_prompt + data` 格式，SVG 从 `data[1].content[0].text.string` 提取。
+```json
+{
+  "instruction": "Draw an orange circle...",
+  "_meta": {
+    "id": "stage1_icon/text2svg/data_000000:312",
+    "gt_svg": "```svg\n<svg xmlns=\"...\" viewBox=\"...\">...</svg>\n```"
+  }
+}
+```
 
-两种格式可混用（例如第一列用 canonical 原始数据，后续列用蒸馏输出）。
+- **id**：`_meta.id` 字段
+- **SVG**：从 `_meta.gt_svg` 字段提取，自动剥除 markdown fence
 
 ---
 

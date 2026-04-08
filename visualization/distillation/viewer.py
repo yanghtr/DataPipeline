@@ -5,6 +5,10 @@ SVG 蒸馏结果多列对比可视化工具。
 支持动态添加/删除 JSONL 列，按 id 字段对齐数据行，
 渲染 SVG 并对比不同模型的蒸馏结果。
 
+支持两种 JSONL 格式：
+  - Distillation output：id + instruction + response（含 fence）
+  - Query seed：        instruction + _meta.id + _meta.gt_svg（含 fence）
+
 用法:
     python visualization/distillation/viewer.py \\
         --jsonl /path/to/col1.jsonl /path/to/col2.jsonl \\
@@ -53,32 +57,26 @@ def _extract_svg(response: str | None) -> str | None:
 
 
 def _extract_instruction(record: dict) -> str:
-    """提取 instruction，兼容 distillation output 和 canonical JSONL 两种格式。"""
-    if "instruction" in record:
-        return record["instruction"] or ""
-    for turn in record.get("data", []):
-        if turn.get("role") == "user":
-            for item in turn.get("content", []):
-                if item.get("type") == "text":
-                    return item.get("text", {}).get("string", "")
-    return ""
+    """提取 instruction。两种格式均在顶层 instruction 字段。"""
+    return record.get("instruction") or ""
 
 
 def _extract_id(record: dict) -> str:
-    """提取唯一 ID，兼容顶层 id 字段和 _meta.id 字段。"""
+    """提取唯一 ID。
+    - Distillation output: 顶层 id 字段
+    - Query seed:          _meta.id 字段
+    """
     return record.get("id") or record.get("_meta", {}).get("id") or ""
 
 
 def _get_response_text(record: dict) -> str | None:
-    """提取 response 文本，兼容 distillation output 和 canonical JSONL 两种格式。"""
+    """提取 SVG response 文本（含 fence，由 _extract_svg 负责剥除）。
+    - Distillation output: record["response"]
+    - Query seed:          record["_meta"]["gt_svg"]
+    """
     if "response" in record:
         return record["response"]
-    for turn in record.get("data", []):
-        if turn.get("role") == "assistant":
-            for item in turn.get("content", []):
-                if item.get("type") == "text":
-                    return item.get("text", {}).get("string")
-    return None
+    return record.get("_meta", {}).get("gt_svg") or None
 
 
 # ── Column 数据结构 ────────────────────────────────────────────────────────────
