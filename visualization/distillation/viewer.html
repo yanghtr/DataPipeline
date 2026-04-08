@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SVG 蒸馏结果对比</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+    #app { display: flex; flex-direction: column; height: 100vh; font-size: 13px; color: #212529; }
+
+    /* ── Toolbar ── */
+    #toolbar {
+      flex-shrink: 0;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 7px 16px;
+      background: #fff;
+      border-bottom: 1px solid #dee2e6;
+    }
+    .app-title { font-weight: 700; font-size: 14px; color: #0d6efd; white-space: nowrap; }
+    .toolbar-sep { width: 1px; height: 22px; background: #dee2e6; flex-shrink: 0; }
+    .toolbar-label { color: #6c757d; white-space: nowrap; }
+    #toolbar select, #toolbar input[type="number"] {
+      padding: 3px 6px; border: 1px solid #ced4da; border-radius: 4px;
+      font-size: 12px; background: #fff; cursor: pointer;
+    }
+    .btn-page {
+      padding: 3px 10px; border: 1px solid #ced4da; border-radius: 4px;
+      background: #fff; cursor: pointer; font-size: 14px; line-height: 1;
+    }
+    .btn-page:disabled { opacity: 0.4; cursor: default; }
+    .btn-page:not(:disabled):hover { background: #e9ecef; }
+    #page-info { font-size: 12px; white-space: nowrap; min-width: 80px; text-align: center; }
+    #row-count-badge {
+      font-size: 11px; padding: 2px 8px;
+      background: #e9ecef; border-radius: 10px; white-space: nowrap;
+    }
+
+    /* ── Add-column bar ── */
+    #add-col-bar {
+      flex-shrink: 0;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 6px 16px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #dee2e6;
+    }
+    #add-col-bar .bar-label { color: #495057; white-space: nowrap; font-weight: 500; }
+    #add-col-path {
+      flex: 1; min-width: 280px; max-width: 600px;
+      padding: 4px 8px; border: 1px solid #ced4da; border-radius: 4px;
+      font-size: 12px; font-family: monospace;
+    }
+    #add-col-path:focus { outline: none; border-color: #0d6efd; box-shadow: 0 0 0 2px rgba(13,110,253,.15); }
+    #add-col-sample { width: 72px; padding: 4px 6px; border: 1px solid #ced4da; border-radius: 4px; font-size: 12px; }
+    .bar-check-label { display: flex; align-items: center; gap: 4px; cursor: pointer; color: #495057; }
+    #btn-add-col {
+      padding: 4px 14px; border: none; border-radius: 4px;
+      background: #0d6efd; color: #fff; cursor: pointer; font-size: 12px; font-weight: 500;
+      white-space: nowrap;
+    }
+    #btn-add-col:hover { background: #0b5ed7; }
+    #add-col-error { color: #dc3545; font-size: 12px; }
+
+    /* ── Table container ── */
+    #table-outer {
+      flex: 1;
+      overflow: auto;     /* scrolls both X and Y */
+      position: relative;
+      background: #fff;
+    }
+    #compare-table { min-width: fit-content; }
+
+    /* ── Column headers (sticky top) ── */
+    #col-headers {
+      display: flex;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 2px solid #dee2e6;
+    }
+
+    /* Corner cell: sticky top + sticky left */
+    .hdr-instr {
+      width: 260px; min-width: 260px; flex-shrink: 0;
+      position: sticky;
+      left: 0;
+      z-index: 20;
+      background: #f0f4ff;
+      border-right: 2px solid #dee2e6;
+      padding: 10px 12px;
+      font-weight: 600; font-size: 12px; color: #495057;
+      display: flex; align-items: center;
+    }
+
+    /* Column header cells */
+    .hdr-col {
+      width: 340px; min-width: 340px; flex-shrink: 0;
+      padding: 8px 10px;
+      background: #f8f9fa;
+      border-right: 1px solid #dee2e6;
+    }
+    .hdr-col-inner { display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; }
+    .col-label {
+      font-weight: 600; font-size: 12px; color: #212529;
+      word-break: break-all; line-height: 1.4;
+    }
+    .col-meta { font-size: 11px; color: #6c757d; margin-top: 2px; }
+    .btn-remove-col {
+      flex-shrink: 0;
+      width: 20px; height: 20px;
+      border: 1px solid #dee2e6; border-radius: 3px;
+      background: #fff; color: #6c757d; cursor: pointer;
+      font-size: 13px; line-height: 1; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .btn-remove-col:hover { background: #fee2e2; color: #dc3545; border-color: #dc3545; }
+
+    /* ── Data rows ── */
+    .compare-row {
+      display: flex;
+      border-bottom: 1px solid #e9ecef;
+    }
+    .compare-row:hover .cell-instr { background: #f8f9fa; }
+
+    /* Instruction cell (sticky left) */
+    .cell-instr {
+      width: 260px; min-width: 260px; flex-shrink: 0;
+      position: sticky;
+      left: 0;
+      z-index: 5;
+      background: #fff;
+      border-right: 2px solid #dee2e6;
+      padding: 10px 12px;
+      display: flex; flex-direction: column; gap: 4px;
+      overflow-y: auto;
+    }
+    .row-num { font-size: 11px; color: #adb5bd; }
+    .row-id {
+      font-size: 11px; font-family: monospace; color: #6c757d;
+      word-break: break-all; line-height: 1.3;
+    }
+    .row-instr {
+      font-size: 12px; color: #212529; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word;
+    }
+
+    /* Data cell */
+    .cell-data {
+      width: 340px; min-width: 340px; flex-shrink: 0;
+      border-right: 1px solid #dee2e6;
+      display: flex; flex-direction: column;
+    }
+
+    /* SVG render area */
+    .svg-render {
+      height: 240px; flex-shrink: 0;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e9ecef;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+    }
+    .svg-render iframe {
+      width: 100%; height: 100%; border: none; display: block;
+    }
+    .svg-placeholder {
+      color: #adb5bd; font-size: 12px; text-align: center; line-height: 1.8; padding: 8px;
+    }
+
+    /* Code area */
+    .code-area {
+      flex: 1;
+      max-height: 220px;
+      overflow-y: auto;
+      padding: 6px 8px;
+      background: #fff;
+    }
+    .code-toolbar {
+      display: flex; align-items: center; gap: 5px;
+      margin-bottom: 5px; flex-wrap: wrap;
+    }
+    .badge-ok      { padding: 1px 6px; border-radius: 3px; font-size: 11px; background: #d1fae5; color: #065f46; }
+    .badge-error   { padding: 1px 6px; border-radius: 3px; font-size: 11px; background: #fee2e2; color: #991b1b; }
+    .badge-missing { padding: 1px 6px; border-radius: 3px; font-size: 11px; background: #f3f4f6; color: #6b7280; }
+    .badge-model {
+      padding: 1px 6px; border-radius: 3px; font-size: 11px;
+      background: #dbeafe; color: #1e40af;
+      max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .escape-label {
+      margin-left: auto; display: flex; align-items: center; gap: 3px;
+      cursor: pointer; font-size: 11px; color: #6c757d; white-space: nowrap;
+    }
+    .code-pre {
+      font-size: 11px; line-height: 1.5; font-family: 'Consolas', 'Monaco', monospace;
+      white-space: pre-wrap; word-break: break-all;
+      margin: 0; color: #333;
+    }
+
+    /* ── Empty/error states ── */
+    .empty-state {
+      padding: 60px 24px; text-align: center;
+      color: #adb5bd; font-size: 14px; line-height: 1.8;
+    }
+    .empty-state-error { color: #dc3545; }
+
+    /* ── Loading overlay ── */
+    #loading-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(255,255,255,0.6);
+      z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 4px solid #dee2e6;
+      border-top-color: #0d6efd;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Toolbar ── -->
+  <div id="toolbar">
+    <span class="app-title">SVG 蒸馏对比</span>
+    <div class="toolbar-sep"></div>
+
+    <span class="toolbar-label">对齐:</span>
+    <select id="align-select" title="行对齐模式：交集=只展示所有列都有的 id；并集=展示所有 id">
+      <option value="intersection">交集（所有列共有）</option>
+      <option value="union">并集（所有 id）</option>
+    </select>
+
+    <div class="toolbar-sep"></div>
+
+    <button id="btn-prev-page" class="btn-page" title="上一页 (←)">‹</button>
+    <span id="page-info">—</span>
+    <button id="btn-next-page" class="btn-page" title="下一页 (→)">›</button>
+    <span id="row-count-badge">0 行</span>
+
+    <div class="toolbar-sep"></div>
+
+    <span class="toolbar-label">每页:</span>
+    <select id="page-size-select">
+      <option value="10">10</option>
+      <option value="20" selected>20</option>
+      <option value="50">50</option>
+    </select>
+  </div>
+
+  <!-- ── Add column bar ── -->
+  <div id="add-col-bar">
+    <span class="bar-label">+ 添加列:</span>
+    <input id="add-col-path" type="text"
+           placeholder="输入 JSONL 文件路径，回车或点击「添加」..." />
+    <span class="toolbar-label">采样:</span>
+    <input id="add-col-sample" type="number" value="500" min="-1" title="-1 表示全部加载" />
+    <label class="bar-check-label">
+      <input type="checkbox" id="add-col-random" />
+      随机采样
+    </label>
+    <button id="btn-add-col">添加</button>
+    <span id="add-col-error"></span>
+  </div>
+
+  <!-- ── Table ── -->
+  <div id="table-outer">
+    <div id="compare-table">
+      <div id="col-headers"></div>
+      <div id="table-body"></div>
+    </div>
+  </div>
+
+  <!-- ── Loading overlay ── -->
+  <div id="loading-overlay"><div class="spinner"></div></div>
+
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+// State
+// ════════════════════════════════════════════════════════════════════════════
+const S = {
+  columns:   [],   // column metadata from /api/info
+  rows:      [],   // current page rows
+  page:      0,
+  pageSize:  20,
+  totalRows: 0,
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// Init
+// ════════════════════════════════════════════════════════════════════════════
+async function init() {
+  try {
+    const info = await fetchJSON('/api/info');
+    applyInfo(info);
+    await loadPage();
+  } catch (err) {
+    showFatalError('初始化失败: ' + err.message);
+  }
+}
+
+function applyInfo(info) {
+  S.columns   = info.columns;
+  S.totalRows = info.row_count;
+  document.getElementById('align-select').value = info.align_mode;
+  renderHeaders();
+  updatePagination();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// API helpers
+// ════════════════════════════════════════════════════════════════════════════
+async function fetchJSON(url, opts) {
+  const r = await fetch(url, opts || {});
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({ error: r.statusText }));
+    throw new Error(body.error || r.statusText);
+  }
+  return r.json();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Page loading
+// ════════════════════════════════════════════════════════════════════════════
+async function loadPage() {
+  setLoading(true);
+  try {
+    const data = await fetchJSON(`/api/rows?page=${S.page}&size=${S.pageSize}`);
+    S.rows      = data.rows;
+    S.totalRows = data.total_rows;
+    renderRows();
+    updatePagination();
+  } catch (err) {
+    showFatalError('加载数据失败: ' + err.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Render: column headers
+// ════════════════════════════════════════════════════════════════════════════
+function renderHeaders() {
+  const hdr = document.getElementById('col-headers');
+  hdr.innerHTML = '';
+
+  // Corner cell
+  const corner = document.createElement('div');
+  corner.className = 'hdr-instr';
+  corner.textContent = '指令 / ID';
+  hdr.appendChild(corner);
+
+  // One cell per column
+  S.columns.forEach((col, i) => {
+    const cell = document.createElement('div');
+    cell.className = 'hdr-col';
+
+    const inner = document.createElement('div');
+    inner.className = 'hdr-col-inner';
+
+    const info = document.createElement('div');
+    info.innerHTML = `
+      <div class="col-label" title="${escHtml(col.path)}">${escHtml(col.label)}</div>
+      <div class="col-meta">
+        ${col.loaded.toLocaleString()} / ${col.total_in_file.toLocaleString()} 条
+        &nbsp;·&nbsp; ${col.random_sample ? '随机' : '前 N'}
+      </div>
+    `;
+
+    const btnRemove = document.createElement('button');
+    btnRemove.className = 'btn-remove-col';
+    btnRemove.title = `删除列 ${i + 1}：${col.label}`;
+    btnRemove.textContent = '×';
+    btnRemove.addEventListener('click', () => removeColumn(i));
+
+    inner.appendChild(info);
+    inner.appendChild(btnRemove);
+    cell.appendChild(inner);
+    hdr.appendChild(cell);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Render: data rows
+// ════════════════════════════════════════════════════════════════════════════
+function renderRows() {
+  const tbody = document.getElementById('table-body');
+  tbody.innerHTML = '';
+
+  if (S.columns.length === 0) {
+    tbody.innerHTML = `
+      <div class="empty-state">
+        暂无数据列<br>
+        <span style="font-size:12px;color:#ced4da;">请在上方输入 JSONL 文件路径并点击「添加」</span>
+      </div>`;
+    return;
+  }
+  if (S.rows.length === 0) {
+    tbody.innerHTML = `<div class="empty-state">当前页无数据（共 ${S.totalRows.toLocaleString()} 行）</div>`;
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  S.rows.forEach((row, rowIdx) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'compare-row';
+
+    // ── Instruction cell ──
+    const instrEl = document.createElement('div');
+    instrEl.className = 'cell-instr';
+    instrEl.innerHTML = `
+      <div class="row-num">#${S.page * S.pageSize + rowIdx + 1}</div>
+      <div class="row-id" title="${escHtml(row.id)}">${escHtml(shortId(row.id))}</div>
+      <div class="row-instr">${escHtml(row.instruction)}</div>
+    `;
+    rowEl.appendChild(instrEl);
+
+    // ── Data cells ──
+    row.cells.forEach(cell => rowEl.appendChild(buildDataCell(cell)));
+
+    frag.appendChild(rowEl);
+  });
+  tbody.appendChild(frag);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Build a single data cell
+// ════════════════════════════════════════════════════════════════════════════
+function buildDataCell(cell) {
+  const el = document.createElement('div');
+  el.className = 'cell-data';
+
+  // ── SVG render area ──
+  const renderDiv = document.createElement('div');
+  renderDiv.className = 'svg-render';
+
+  if (cell.status === 'missing') {
+    renderDiv.innerHTML = '<div class="svg-placeholder">—<br>此列无此 ID</div>';
+  } else if (cell.has_svg && cell.svg) {
+    const frame = document.createElement('iframe');
+    frame.sandbox = 'allow-scripts';
+    frame.srcdoc = [
+      '<!DOCTYPE html><html>',
+      '<head><style>',
+      'html,body{margin:0;padding:4px;background:#f8f9fa;',
+      'display:flex;align-items:center;justify-content:center;',
+      'height:100%;box-sizing:border-box;}',
+      'svg{max-width:100%;max-height:228px;width:auto;height:auto;}',
+      '</style></head>',
+      '<body>', cell.svg, '</body></html>',
+    ].join('');
+    renderDiv.appendChild(frame);
+  } else if (cell.status === 'error') {
+    renderDiv.innerHTML = '<div class="svg-placeholder">❌ 生成失败</div>';
+  } else {
+    renderDiv.innerHTML = '<div class="svg-placeholder">无 SVG<br>（提取失败）</div>';
+  }
+
+  // ── Code area ──
+  const codeDiv  = document.createElement('div');
+  codeDiv.className = 'code-area';
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'code-toolbar';
+
+  // Status badge
+  const statusEl = document.createElement('span');
+  statusEl.className =
+    cell.status === 'ok'      ? 'badge-ok' :
+    cell.status === 'error'   ? 'badge-error' : 'badge-missing';
+  statusEl.textContent = cell.status || '—';
+
+  // Model badge
+  const modelEl = document.createElement('span');
+  modelEl.className = 'badge-model';
+  modelEl.textContent = cell.model || '—';
+  modelEl.title = cell.model || '';
+
+  // Escape toggle
+  const escLabel = document.createElement('label');
+  escLabel.className = 'escape-label';
+  const escChk = document.createElement('input');
+  escChk.type = 'checkbox';
+  escLabel.appendChild(escChk);
+  escLabel.append('\u00a0转义');
+
+  toolbar.appendChild(statusEl);
+  toolbar.appendChild(modelEl);
+  toolbar.appendChild(escLabel);
+
+  // Code pre
+  const pre = document.createElement('pre');
+  pre.className = 'code-pre';
+  const rawText = cell.raw_response || '';
+  pre.textContent = rawText;
+
+  // Toggle: unchecked = human-readable (actual newlines); checked = JSON-escaped (\n as text)
+  escChk.addEventListener('change', () => {
+    pre.textContent = escChk.checked
+      ? JSON.stringify(rawText).slice(1, -1)  // strip surrounding quotes
+      : rawText;
+  });
+
+  codeDiv.appendChild(toolbar);
+  codeDiv.appendChild(pre);
+
+  el.appendChild(renderDiv);
+  el.appendChild(codeDiv);
+  return el;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Pagination controls
+// ════════════════════════════════════════════════════════════════════════════
+function updatePagination() {
+  const totalPages = Math.max(1, Math.ceil(S.totalRows / S.pageSize));
+  document.getElementById('page-info').textContent =
+    `第 ${S.page + 1} / ${totalPages} 页`;
+  document.getElementById('row-count-badge').textContent =
+    `共 ${S.totalRows.toLocaleString()} 行`;
+  document.getElementById('btn-prev-page').disabled = (S.page === 0);
+  document.getElementById('btn-next-page').disabled = (S.page >= totalPages - 1);
+}
+
+document.getElementById('btn-prev-page').addEventListener('click', async () => {
+  if (S.page > 0) { S.page--; await loadPage(); }
+});
+document.getElementById('btn-next-page').addEventListener('click', async () => {
+  const total = Math.ceil(S.totalRows / S.pageSize);
+  if (S.page < total - 1) { S.page++; await loadPage(); }
+});
+document.getElementById('page-size-select').addEventListener('change', async function () {
+  S.pageSize = parseInt(this.value);
+  S.page = 0;
+  await loadPage();
+});
+
+// Keyboard navigation
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const total = Math.ceil(S.totalRows / S.pageSize);
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowUp') && S.page > 0) {
+    e.preventDefault();
+    S.page--;
+    loadPage();
+  } else if ((e.key === 'ArrowRight' || e.key === 'ArrowDown') && S.page < total - 1) {
+    e.preventDefault();
+    S.page++;
+    loadPage();
+  }
+});
+
+// Align mode
+document.getElementById('align-select').addEventListener('change', async function () {
+  setLoading(true);
+  try {
+    const info = await fetchJSON('/api/align', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: this.value }),
+    });
+    S.page = 0;
+    applyInfo(info);
+    await loadPage();
+  } catch (err) {
+    showFatalError('切换对齐模式失败: ' + err.message);
+  } finally {
+    setLoading(false);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Add / Remove column
+// ════════════════════════════════════════════════════════════════════════════
+document.getElementById('btn-add-col').addEventListener('click', addColumn);
+document.getElementById('add-col-path').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addColumn();
+});
+
+async function addColumn() {
+  const pathInput = document.getElementById('add-col-path');
+  const errDiv    = document.getElementById('add-col-error');
+  const path = pathInput.value.trim();
+  errDiv.textContent = '';
+
+  if (!path) {
+    errDiv.textContent = '请输入 JSONL 路径';
+    return;
+  }
+  const sampleN    = parseInt(document.getElementById('add-col-sample').value) || 500;
+  const randomSamp = document.getElementById('add-col-random').checked;
+
+  setLoading(true);
+  try {
+    const info = await fetchJSON('/api/columns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, sample_n: sampleN, random: randomSamp }),
+    });
+    pathInput.value = '';
+    S.page = 0;
+    applyInfo(info);
+    await loadPage();
+  } catch (err) {
+    errDiv.textContent = '添加失败: ' + err.message;
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function removeColumn(idx) {
+  if (!confirm(`确认删除第 ${idx + 1} 列？`)) return;
+  setLoading(true);
+  try {
+    const info = await fetchJSON(`/api/columns/${idx}`, { method: 'DELETE' });
+    S.page = 0;
+    applyInfo(info);
+    await loadPage();
+  } catch (err) {
+    showFatalError('删除列失败: ' + err.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Utils
+// ════════════════════════════════════════════════════════════════════════════
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#39;');
+}
+
+function shortId(id) {
+  // Show last 52 chars if too long, with leading ellipsis
+  return id.length > 52 ? '\u2026' + id.slice(-49) : id;
+}
+
+function setLoading(show) {
+  document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none';
+}
+
+function showFatalError(msg) {
+  document.getElementById('table-body').innerHTML =
+    `<div class="empty-state empty-state-error">${escHtml(msg)}</div>`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Start
+// ════════════════════════════════════════════════════════════════════════════
+init();
+</script>
+</body>
+</html>
