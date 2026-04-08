@@ -377,7 +377,7 @@ def main() -> None:
         help="随机采样；未设置则取文件前 N 条",
     )
     parser.add_argument("--port", type=int, default=7861, help="HTTP 端口（默认 7861）")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="监听地址")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="监听地址（默认 0.0.0.0 允许外网访问；仅本机访问可设为 127.0.0.1）")
     args = parser.parse_args()
 
     for path in (args.jsonl or []):
