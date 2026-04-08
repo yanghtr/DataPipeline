@@ -2,3 +2,7 @@
 
 我想写一个可视化，把蒸馏得到的数据（你之前蒸馏代码 distillation/configs/default.yaml 里面的output_path）里面的数据进行可视化（有多少可视化多少，或者人为指定采样量）。这里核心是读取`response`里面的SVG代码，然后把SVG代码直接渲染出图片，和这条数据原始的SVG代码进行对比。我想看在同样一条`instruction` 文本下面，原始的SVG代码和渲染结果，对比现在蒸馏之后新的SVG代码和渲染结果（渲染都直接渲染，代码都要展示出来，而且可以点一个框把\n, \"这些给转义方便人查看。这里我们是可以手动选择读取哪些蒸馏结果（我们可以加/减 jsonl 这些 output_path，每手动输入jsonl 路径，就会加载多一列可视化，对于每一列，上面是渲染的SVG，下面是SVG原始代码； 还可以自己减一列，动态调整）。这里核心是我们的数据要一一对应，即都是对应同样一个instruction
 
+
+对于蒸馏，要支持的两种格式是Distillation output ( record["response"]（剥 fence）)和前面种子数据筛选得到的query_seed: record["instruction"]应该是相同的指令，record["_meta"]["id"]应该是相同的id，record["_meta"]["gt_svg"]是原始的SVG（需要 （剥 fence））
+
+

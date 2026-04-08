@@ -51,7 +51,6 @@ python visualization/distillation/viewer.py --port 7861
 | `--jsonl` | 无 | 初始 JSONL 文件路径（可多个，空格分隔）。也可不填，在 UI 中动态添加 |
 | `--sample-n` | 500 | 每列加载条数。`-1` 表示全部加载（谨慎用于大文件） |
 | `--random-sample` | 关 | 启用后用水库采样（Algorithm R）随机抽取 N 条；未启用则取文件前 N 条 |
-| `--align` | `intersection` | 行对齐模式（见下方说明） |
 | `--port` | 7861 | HTTP 服务端口 |
 | `--host` | 127.0.0.1 | 监听地址。WSL 下若需从 Windows 访问，改为 `0.0.0.0` |
 
@@ -97,16 +96,11 @@ python visualization/distillation/viewer.py --port 7861
 
 ---
 
-## 行对齐模式
+## 采样与对齐规则
 
-多列展示时，各 JSONL 文件可能包含不同的 id 集合。
-
-| 模式 | 说明 |
-|------|------|
-| `intersection`（交集）| 只展示**所有列都包含**的 id。行顺序跟随第一列 |
-| `union`（并集）| 展示**所有列 id 的并集**。某列缺少某 id 时显示占位符「—」 |
-
-对齐模式可在 UI 工具栏的下拉框中随时切换，无需重启。
+- **第一列是基准列**：只对第一个加载的文件执行采样（前 N 条或随机采样）
+- **后续列不再独立采样**：而是扫描整个文件，按第一列采样出的 `id` 精确匹配
+- **行顺序固定跟随第一列**：若某列缺少某个 `id`，该单元格显示占位符「—」
 
 ---
 
@@ -114,7 +108,6 @@ python visualization/distillation/viewer.py --port 7861
 
 ### 工具栏
 
-- **对齐下拉框**：切换 intersection / union 模式，立即重新计算行列表
 - **‹ / › 按钮**：翻页（也支持键盘 `←`/`→` 键）
 - **每页下拉框**：切换每页显示条数（10 / 20 / 50）
 
@@ -194,7 +187,6 @@ python visualization/distillation/viewer.py \
 | `GET` | `/api/rows?page=0&size=20` | 分页行数据（每行含所有列的 cell） |
 | `POST` | `/api/columns` | 添加列 `{"path":"...", "sample_n":500, "random":false}` |
 | `DELETE` | `/api/columns/<idx>` | 删除第 idx 列（0-based） |
-| `POST` | `/api/align` | 切换对齐模式 `{"mode":"intersection"}` |
 
 ---
 

@@ -110,48 +110,23 @@ def _make_label(path: str) -> str:
     return "/".join(parts[-2:]) if len(parts) >= 2 else Path(path).name
 
 
-def _load_column(path: str, sample_n: int, random_sample: bool) -> Column:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"文件不存在: {path}")
-
-    reservoir: list[tuple[int, dict]] = []
-    first_n: list[tuple[int, dict]] = []
-    total = 0
-
-    logger.info(f"[load] 加载: {path}")
-    with p.open(encoding="utf-8") as f:
-        for lineno, raw in enumerate(f, 1):
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            total += 1
-            take_all = sample_n < 0
-            if take_all or not random_sample:
-                if take_all or total <= sample_n:
-                    first_n.append((lineno, obj))
-            else:
-                if len(reservoir) < sample_n:
-                    reservoir.append((lineno, obj))
-                else:
-                    j = random.randint(0, total - 1)
-                    if j < sample_n:
-                        reservoir[j] = (lineno, obj)
-
-    selected = reservoir if (random_sample and sample_n > 0) else first_n
-    selected.sort(key=lambda x: x[0])
+def _parse_column_records(
+    records: list[tuple[int, dict]],
+    path: str,
+    total: int,
+    sample_n: int,
+    random_sample: bool,
+) -> Column:
+    """将已选中的记录转换成列数据。"""
+    records.sort(key=lambda x: x[0])
 
     id_order: list[str] = []
     cells: dict[str, dict] = {}
     instructions: dict[str, str] = {}
 
-    for _, obj in selected:
+    for _, obj in records:
         rec_id = _extract_id(obj)
-        if not rec_id:
+        if not rec_id or rec_id in cells:
             continue
         id_order.append(rec_id)
         resp_text = _get_response_text(obj)
@@ -179,37 +154,95 @@ def _load_column(path: str, sample_n: int, random_sample: bool) -> Column:
     )
 
 
+def _load_column(
+    path: str,
+    sample_n: int,
+    random_sample: bool,
+    reference_ids: list[str] | None = None,
+) -> Column:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"文件不存在: {path}")
+
+    reference_index = None
+    reference_set = None
+    if reference_ids is not None:
+        reference_index = {rid: idx for idx, rid in enumerate(reference_ids)}
+        reference_set = set(reference_ids)
+
+    reservoir: list[tuple[int, dict]] = []
+    first_n: list[tuple[int, dict]] = []
+    matched_records: list[tuple[int, dict]] = []
+    total = 0
+
+    logger.info(f"[load] 加载: {path}")
+    with p.open(encoding="utf-8") as f:
+        for lineno, raw in enumerate(f, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            total += 1
+            if reference_set is not None:
+                rec_id = _extract_id(obj)
+                if rec_id in reference_set:
+                    matched_records.append((reference_index[rec_id], obj))
+                continue
+            take_all = sample_n < 0
+            if take_all or not random_sample:
+                if take_all or total <= sample_n:
+                    first_n.append((lineno, obj))
+            else:
+                if len(reservoir) < sample_n:
+                    reservoir.append((lineno, obj))
+                else:
+                    j = random.randint(0, total - 1)
+                    if j < sample_n:
+                        reservoir[j] = (lineno, obj)
+
+    if reference_set is not None:
+        logger.info(
+            f"[load] 参考首列 ID 匹配: {len(matched_records):,} / {len(reference_ids):,} 条"
+        )
+        return _parse_column_records(
+            matched_records,
+            path=path,
+            total=total,
+            sample_n=sample_n,
+            random_sample=random_sample,
+        )
+
+    selected = reservoir if (random_sample and sample_n > 0) else first_n
+    return _parse_column_records(
+        selected,
+        path=path,
+        total=total,
+        sample_n=sample_n,
+        random_sample=random_sample,
+    )
+
+
 # ── 全局状态 ──────────────────────────────────────────────────────────────────
 
 _columns: list[Column] = []
 _row_ids: list[str] = []
-_align_mode: str = "intersection"
 _state_lock = threading.Lock()
 
 
 def _recompute_row_ids() -> None:
-    """根据当前对齐模式重新计算展示行 ID 列表。调用前必须持有 _state_lock。"""
+    """以第一列为基准，行列表 = 第一列的 id 列表（其他列按 id 匹配，缺失则显示占位符）。
+    调用前必须持有 _state_lock。
+    """
     global _row_ids
     if not _columns:
         _row_ids = []
         return
-    if _align_mode == "intersection":
-        # 只展示所有列都有的 id，顺序跟随第一列
-        common: set[str] = set(_columns[0].id_order)
-        for col in _columns[1:]:
-            common &= set(col.id_order)
-        _row_ids = [rid for rid in _columns[0].id_order if rid in common]
-    else:
-        # 展示所有列的 id 并集，顺序跟随各列加载顺序
-        seen: set[str] = set()
-        result: list[str] = []
-        for col in _columns:
-            for rid in col.id_order:
-                if rid not in seen:
-                    seen.add(rid)
-                    result.append(rid)
-        _row_ids = result
-    logger.info(f"[align] mode={_align_mode}  展示行数: {len(_row_ids):,}")
+    # 始终以第一列的 id 顺序作为基准
+    _row_ids = list(_columns[0].id_order)
+    logger.info(f"[rows] 基准行数: {len(_row_ids):,}（以第一列为参考）")
 
 
 def _build_info() -> dict:
@@ -227,7 +260,6 @@ def _build_info() -> dict:
             for i, c in enumerate(_columns)
         ],
         "row_count": len(_row_ids),
-        "align_mode": _align_mode,
     }
 
 
@@ -291,7 +323,9 @@ def api_add_column():
     sample_n = int(body.get("sample_n", 500))
     random_sample = bool(body.get("random", False))
     try:
-        col = _load_column(path, sample_n, random_sample)
+        with _state_lock:
+            reference_ids = list(_columns[0].id_order) if _columns else None
+        col = _load_column(path, sample_n, random_sample, reference_ids=reference_ids)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
     with _state_lock:
@@ -306,19 +340,6 @@ def api_remove_column(idx: int):
         if idx < 0 or idx >= len(_columns):
             return jsonify({"error": "index out of range"}), 400
         _columns.pop(idx)
-        _recompute_row_ids()
-        return jsonify(_build_info())
-
-
-@app.route("/api/align", methods=["POST"])
-def api_set_align():
-    global _align_mode
-    body = request.get_json(force=True) or {}
-    mode = body.get("mode", "intersection")
-    if mode not in ("intersection", "union"):
-        return jsonify({"error": "mode must be 'intersection' or 'union'"}), 400
-    with _state_lock:
-        _align_mode = mode
         _recompute_row_ids()
         return jsonify(_build_info())
 
@@ -355,20 +376,19 @@ def main() -> None:
         "--random-sample", action="store_true",
         help="随机采样；未设置则取文件前 N 条",
     )
-    parser.add_argument(
-        "--align", choices=["intersection", "union"], default="intersection",
-        help="行对齐模式：intersection=只展示所有列都有的 id；union=展示所有 id（默认 intersection）",
-    )
     parser.add_argument("--port", type=int, default=7861, help="HTTP 端口（默认 7861）")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="监听地址")
     args = parser.parse_args()
 
-    global _align_mode
-    _align_mode = args.align
-
     for path in (args.jsonl or []):
         try:
-            col = _load_column(path, args.sample_n, args.random_sample)
+            reference_ids = list(_columns[0].id_order) if _columns else None
+            col = _load_column(
+                path,
+                args.sample_n,
+                args.random_sample,
+                reference_ids=reference_ids,
+            )
             _columns.append(col)
         except Exception as exc:
             logger.error(f"加载失败 {path}: {exc}")
