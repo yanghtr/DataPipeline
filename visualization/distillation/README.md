@@ -140,7 +140,7 @@ python visualization/distillation/viewer.py --port 7861
 ### SVG 渲染说明
 
 - 渲染区域尺寸：240px 高，340px 宽，SVG 自动等比缩放至 `max-width: 100%; max-height: 228px`
-- 渲染在 `<iframe sandbox="allow-scripts">` 中进行，与主页面隔离
+- 渲染优先使用浏览器原生 `<img>` 加载 SVG Blob URL；若失败则回退到 `<iframe sandbox="allow-scripts">`
 - 服务端在提取 SVG 时会自动剥除 `<script>` 标签
 
 ---

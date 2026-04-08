@@ -442,19 +442,7 @@ function buildDataCell(cell) {
   if (cell.status === 'missing') {
     renderDiv.innerHTML = '<div class="svg-placeholder">—<br>此列无此 ID</div>';
   } else if (cell.has_svg && cell.svg) {
-    const frame = document.createElement('iframe');
-    frame.sandbox = 'allow-scripts';
-    frame.srcdoc = [
-      '<!DOCTYPE html><html>',
-      '<head><style>',
-      'html,body{margin:0;padding:4px;background:#f8f9fa;',
-      'display:flex;align-items:center;justify-content:center;',
-      'height:100%;box-sizing:border-box;}',
-      'svg{max-width:100%;max-height:228px;width:auto;height:auto;}',
-      '</style></head>',
-      '<body>', cell.svg, '</body></html>',
-    ].join('');
-    renderDiv.appendChild(frame);
+    renderSvgPreview(renderDiv, cell.svg);
   } else if (cell.status === 'error') {
     renderDiv.innerHTML = '<div class="svg-placeholder">❌ 生成失败</div>';
   } else {
@@ -512,6 +500,61 @@ function buildDataCell(cell) {
   el.appendChild(renderDiv);
   el.appendChild(codeDiv);
   return el;
+}
+
+function renderSvgPreview(container, svgText) {
+  const markup = String(svgText || '').trim();
+  if (!markup) {
+    container.innerHTML = '<div class="svg-placeholder">无 SVG<br>（内容为空）</div>';
+    return;
+  }
+
+  const img = document.createElement('img');
+  img.alt = 'SVG preview';
+  img.loading = 'lazy';
+
+  let released = false;
+  let blobUrl = '';
+  const releaseBlobUrl = () => {
+    if (released || !blobUrl) return;
+    URL.revokeObjectURL(blobUrl);
+    released = true;
+  };
+
+  try {
+    blobUrl = URL.createObjectURL(new Blob([markup], {
+      type: 'image/svg+xml;charset=utf-8',
+    }));
+    img.src = blobUrl;
+  } catch (err) {
+    renderSvgIframeFallback(container, markup);
+    return;
+  }
+
+  img.addEventListener('load', releaseBlobUrl, { once: true });
+  img.addEventListener('error', () => {
+    releaseBlobUrl();
+    renderSvgIframeFallback(container, markup);
+  }, { once: true });
+
+  container.appendChild(img);
+}
+
+function renderSvgIframeFallback(container, svgText) {
+  container.innerHTML = '';
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', 'allow-scripts');
+  frame.srcdoc = [
+    '<!DOCTYPE html><html>',
+    '<head><style>',
+    'html,body{margin:0;padding:4px;background:#f8f9fa;',
+    'display:flex;align-items:center;justify-content:center;',
+    'height:100%;box-sizing:border-box;}',
+    'svg{max-width:100%;max-height:228px;width:auto;height:auto;}',
+    '</style></head>',
+    '<body>', svgText, '</body></html>',
+  ].join('');
+  container.appendChild(frame);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
