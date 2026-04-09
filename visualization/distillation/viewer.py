@@ -232,6 +232,7 @@ def _load_column(
 
 _columns: list[Column] = []
 _row_ids: list[str] = []
+_annotations: dict[str, dict[int, int]] = {}   # row_id → {col_idx → score (0/1)}
 _state_lock = threading.Lock()
 
 
@@ -246,6 +247,17 @@ def _recompute_row_ids() -> None:
     # 始终以第一列的 id 顺序作为基准
     _row_ids = list(_columns[0].id_order)
     logger.info(f"[rows] 基准行数: {len(_row_ids):,}（以第一列为参考）")
+
+
+def _compute_annotation_summary() -> dict[str, int]:
+    """Return {str(col_idx): total_score}. Must be called with _state_lock held."""
+    summary: dict[str, int] = {str(i): 0 for i in range(len(_columns))}
+    for cols in _annotations.values():
+        for col_idx, score in cols.items():
+            key = str(col_idx)
+            if key in summary:
+                summary[key] += score
+    return summary
 
 
 def _build_info() -> dict:
@@ -349,6 +361,37 @@ def api_remove_column(idx: int):
         _columns.pop(idx)
         _recompute_row_ids()
         return jsonify(_build_info())
+
+
+@app.route("/api/annotations")
+def api_get_annotations():
+    with _state_lock:
+        serialized = {
+            row_id: {str(col_idx): score for col_idx, score in cols.items()}
+            for row_id, cols in _annotations.items()
+        }
+        return jsonify({"annotations": serialized, "summary": _compute_annotation_summary()})
+
+
+@app.route("/api/annotations", methods=["POST"])
+def api_set_annotation():
+    body = request.get_json(force=True) or {}
+    row_id = str(body.get("row_id", "")).strip()
+    col_idx = int(body.get("col_idx", 0))
+    score = int(body.get("score", 0))
+    if not row_id:
+        return jsonify({"error": "row_id required"}), 400
+    with _state_lock:
+        if score == 0:
+            if row_id in _annotations:
+                _annotations[row_id].pop(col_idx, None)
+                if not _annotations[row_id]:
+                    del _annotations[row_id]
+        else:
+            if row_id not in _annotations:
+                _annotations[row_id] = {}
+            _annotations[row_id][col_idx] = score
+        return jsonify({"summary": _compute_annotation_summary()})
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

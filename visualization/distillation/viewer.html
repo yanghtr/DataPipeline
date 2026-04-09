@@ -204,6 +204,46 @@
       margin: 0; color: #333;
     }
 
+    /* ── Annotation button ── */
+    .annotation-bar {
+      display: flex; align-items: center; justify-content: center;
+      padding: 4px 8px;
+      background: #fff;
+      border-bottom: 1px solid #e9ecef;
+      flex-shrink: 0;
+    }
+    .btn-annotate {
+      padding: 2px 14px; border-radius: 4px; cursor: pointer;
+      font-size: 12px; border: 1px solid #ced4da;
+      background: #fff; color: #6c757d;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+      line-height: 1.6;
+    }
+    .btn-annotate.selected {
+      background: #d1fae5; color: #065f46; border-color: #6ee7b7; font-weight: 600;
+    }
+    .btn-annotate:hover:not(.selected) { background: #f3f4f6; border-color: #adb5bd; }
+
+    /* ── Score summary bar ── */
+    #score-summary {
+      flex-shrink: 0;
+      display: none;
+      align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 5px 16px;
+      background: #fffbeb;
+      border-bottom: 1px solid #fde68a;
+      font-size: 12px;
+    }
+    #score-summary .summary-label { color: #92400e; font-weight: 600; white-space: nowrap; }
+    .score-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 2px 9px; border-radius: 10px;
+      background: #fef3c7; color: #78350f;
+      border: 1px solid #fde68a;
+    }
+    .score-badge .score-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .score-badge .score-val { font-weight: 700; color: #065f46; }
+
     /* ── Empty/error states ── */
     .empty-state {
       padding: 60px 24px; text-align: center;
@@ -276,6 +316,11 @@
     <span id="add-col-error"></span>
   </div>
 
+  <!-- ── Score summary bar ── -->
+  <div id="score-summary">
+    <span class="summary-label">分数统计:</span>
+  </div>
+
   <!-- ── Table ── -->
   <div id="table-outer">
     <div id="compare-table">
@@ -294,12 +339,14 @@
 // State
 // ════════════════════════════════════════════════════════════════════════════
 const S = {
-  columns:   [],   // column metadata from /api/info
-  rows:      [],   // current page rows
-  page:      0,
-  pageSize:  20,
-  totalRows: 0,
-  stageFilter: '', // '' = all, 'stage1_icon', 'stage2_illustration'
+  columns:     [],   // column metadata from /api/info
+  rows:        [],   // current page rows
+  page:        0,
+  pageSize:    20,
+  totalRows:   0,
+  stageFilter: '',   // '' = all, 'stage1_icon', 'stage2_illustration'
+  annotations: {},   // row_id → {col_idx(number): score}
+  summary:     {},   // col_idx(string) → total_score
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -307,9 +354,22 @@ const S = {
 // ════════════════════════════════════════════════════════════════════════════
 async function init() {
   try {
-    const info = await fetchJSON('/api/info');
+    const [info, annotData] = await Promise.all([
+      fetchJSON('/api/info'),
+      fetchJSON('/api/annotations'),
+    ]);
+    // Deserialize: keys are strings from JSON, convert col_idx to number
+    S.annotations = {};
+    for (const [rowId, cols] of Object.entries(annotData.annotations || {})) {
+      S.annotations[rowId] = {};
+      for (const [ci, score] of Object.entries(cols)) {
+        S.annotations[rowId][parseInt(ci)] = score;
+      }
+    }
+    S.summary = annotData.summary || {};
     applyInfo(info);
     await loadPage();
+    updateScoreSummary();
   } catch (err) {
     showFatalError('初始化失败: ' + err.message);
   }
@@ -320,6 +380,7 @@ function applyInfo(info) {
   S.totalRows = info.row_count;
   renderHeaders();
   updatePagination();
+  updateScoreSummary();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -432,7 +493,7 @@ function renderRows() {
     rowEl.appendChild(instrEl);
 
     // ── Data cells ──
-    row.cells.forEach(cell => rowEl.appendChild(buildDataCell(cell)));
+    row.cells.forEach((cell, colIdx) => rowEl.appendChild(buildDataCell(cell, row.id, colIdx)));
 
     frag.appendChild(rowEl);
   });
@@ -442,7 +503,7 @@ function renderRows() {
 // ════════════════════════════════════════════════════════════════════════════
 // Build a single data cell
 // ════════════════════════════════════════════════════════════════════════════
-function buildDataCell(cell) {
+function buildDataCell(cell, rowId, colIdx) {
   const el = document.createElement('div');
   el.className = 'cell-data';
 
@@ -508,7 +569,18 @@ function buildDataCell(cell) {
   codeDiv.appendChild(toolbar);
   codeDiv.appendChild(pre);
 
+  // ── Annotation button ──
+  const annotBar = document.createElement('div');
+  annotBar.className = 'annotation-bar';
+  const btnAnnot = document.createElement('button');
+  const isGood = ((S.annotations[rowId] || {})[colIdx] || 0) === 1;
+  btnAnnot.className = 'btn-annotate' + (isGood ? ' selected' : '');
+  btnAnnot.textContent = isGood ? '✓ 好' : '标记好';
+  btnAnnot.addEventListener('click', () => toggleAnnotation(rowId, colIdx, btnAnnot));
+  annotBar.appendChild(btnAnnot);
+
   el.appendChild(renderDiv);
+  el.appendChild(annotBar);
   el.appendChild(codeDiv);
   return el;
 }
@@ -566,6 +638,54 @@ function renderSvgIframeFallback(container, svgText) {
     '<body>', svgText, '</body></html>',
   ].join('');
   container.appendChild(frame);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Annotation: toggle & summary
+// ════════════════════════════════════════════════════════════════════════════
+async function toggleAnnotation(rowId, colIdx, btn) {
+  const current = ((S.annotations[rowId] || {})[colIdx]) || 0;
+  const newScore = current === 1 ? 0 : 1;
+
+  // Optimistic local update
+  if (!S.annotations[rowId]) S.annotations[rowId] = {};
+  if (newScore === 0) {
+    delete S.annotations[rowId][colIdx];
+  } else {
+    S.annotations[rowId][colIdx] = newScore;
+  }
+  btn.className = 'btn-annotate' + (newScore === 1 ? ' selected' : '');
+  btn.textContent = newScore === 1 ? '✓ 好' : '标记好';
+
+  try {
+    const result = await fetchJSON('/api/annotations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ row_id: rowId, col_idx: colIdx, score: newScore }),
+    });
+    S.summary = result.summary || {};
+    updateScoreSummary();
+  } catch (err) {
+    console.error('标注保存失败:', err);
+  }
+}
+
+function updateScoreSummary() {
+  const panel = document.getElementById('score-summary');
+  if (!S.columns.length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'flex';
+  // Rebuild content
+  panel.innerHTML = '<span class="summary-label">分数统计:</span>';
+  S.columns.forEach((col, i) => {
+    const score = parseInt(S.summary[String(i)] || 0);
+    const badge = document.createElement('span');
+    badge.className = 'score-badge';
+    badge.title = col.label;
+    badge.innerHTML =
+      `<span class="score-name">${escHtml(col.label)}</span>` +
+      `<span class="score-val">${score}</span>`;
+    panel.appendChild(badge);
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
