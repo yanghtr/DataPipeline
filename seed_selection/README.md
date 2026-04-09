@@ -168,7 +168,7 @@ seed_selection/
   kmeans_npu.py      # NPU/GPU 加速 KMeans（标准 Lloyd's，torch_npu/torch.cuda）
   kmeans_faiss.py    # faiss-cpu 精确 KMeans（CPU BLAS 加速）
   sample.py          # Step 8：分层采样（pool_1000k + 六层分域分级）
-  analyze.py         # 质量报告生成
+  analyze.py         # 质量报告生成（六层分级分析、层间 distance 单调性验证）
   main.py            # CLI 入口
   configs/
     default.yaml     # 默认配置模板
@@ -493,3 +493,66 @@ python -m pytest seed_selection/tests/test_e2e.py -v
 | sample | `pool_1000k.jsonl` |
 
 embed 阶段支持 shard 级 resume：已存在的 shard 不重新计算。
+
+---
+
+## 质量分析（analyze 子命令）
+
+```bash
+python -m seed_selection.main \
+  --config seed_selection/configs/default.yaml \
+  analyze
+```
+
+分析结果写入 `{output_root}/analysis/`：
+
+| 文件 | 内容 |
+|------|------|
+| `report.txt` | 文字报告：漏斗统计、六层计数、cluster 覆盖率、层间 distance 分离、source mix |
+| `metrics.json` | 所有指标的 JSON 快照 |
+| `01_funnel.png` | 各流水线阶段记录数瀑布图 |
+| `02_bucket_dist.png` | 每个 bucket 三层分级柱状图（高/中/低优 grouped bars）|
+| `03_cluster_size_hist.png` | 各 bucket cluster 大小分布直方图 |
+| `04_instruction_len.png` | instruction 长度分布（每个 bucket 一图，三层叠加）|
+| `05_distance_hist.png` | distance_to_centroid 分布（每个 bucket 一图，三层叠加，高优峰值应在最左）|
+| `06_source_mix.png` | img2svg vs text2svg 比例饼图（pool_1000k）|
+| `07_umap.png` | embeddings UMAP 投影（可选，需 `pip install umap-learn`）|
+
+### 核心质量指标说明
+
+**六层不变量**：六层记录数之和应等于 `pool_1000k` 总条数。
+
+**层间 distance 单调性**：对每个 bucket，应满足：
+
+```
+高优 mean(distance) < 中优 mean(distance) < 低优 mean(distance)
+```
+
+report.txt 会自动标记 `✓ 正常` 或 `⚠ 异常`。
+
+**05_distance_hist.png 解读**：
+
+```
+高优（红）峰值 ←── 中优（蓝）峰值 ←── 低优（绿）峰值
+```
+
+若三峰叠在一起，说明分层无实质质量区分（通常不会出现，因为 Round-Robin 指针连续前进保证了分离）。
+
+### analyze 所需文件
+
+analyze 模式读取 sample 阶段的输出，所需文件：
+
+```
+{output_root}/
+  pool_1000k.jsonl
+  stage1_icon_high.jsonl
+  stage1_icon_medium.jsonl
+  stage1_icon_low.jsonl
+  stage2_illustration_high.jsonl
+  stage2_illustration_medium.jsonl
+  stage2_illustration_low.jsonl
+  cluster_assignments.jsonl          # 用于 cluster 覆盖率统计
+  embeddings/                        # 可选，仅 07_umap.png 使用
+```
+
+缺少某个文件时对应指标/图表会被跳过，不影响其他分析。

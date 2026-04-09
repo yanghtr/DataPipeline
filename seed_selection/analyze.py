@@ -5,11 +5,12 @@ CLI 子命令：python -m seed_selection.main analyze --config ...
 
 输出到 {output_root}/analysis/：
   report.txt               文字漏斗统计 + 关键指标
+  metrics.json             所有指标的 JSON 快照
   01_funnel.png            各阶段记录数瀑布图
-  02_bucket_dist.png       bucket 分布柱状图
+  02_bucket_dist.png       六层分级柱状图（每个 bucket 三层叠加）
   03_cluster_size_hist.png 各 bucket cluster 大小分布直方图
-  04_instruction_len.png   instruction 长度分布（anneal vs hp 对比）
-  05_distance_hist.png     distance_to_centroid 分布（anneal vs hp 对比）
+  04_instruction_len.png   instruction 长度分布（各域高/中/低优对比）
+  05_distance_hist.png     distance_to_centroid 分布（各域高/中/低优对比）
   06_source_mix.png        img2svg vs text2svg 比例饼图
   07_umap.png              [可选] embeddings UMAP 投影（需 umap-learn）
 """
@@ -17,6 +18,7 @@ CLI 子命令：python -m seed_selection.main analyze --config ...
 from __future__ import annotations
 
 import json
+import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
@@ -74,7 +76,7 @@ def _read_jsonl_records(path: Path) -> list[dict]:
     return records
 
 
-# ── 漏斗统计 ──────────────────────────────────────────────────────────────────
+# ── 文件定义 ──────────────────────────────────────────────────────────────────
 
 STAGE_FILES = [
     ("extract",     "instruction_pool_raw.jsonl"),
@@ -83,23 +85,34 @@ STAGE_FILES = [
     ("dedup_near",  "near_dedup_kept.jsonl"),
     ("svg_filter",  "svg_filtered_kept.jsonl"),
     ("cluster",     "cluster_assignments.jsonl"),
+    ("pool_1000k",  "pool_1000k.jsonl"),
 ]
 
-POOL_FILES = [
-    ("pool_1000k",       "pool_1000k.jsonl"),
-    ("high_priority",    "high_priority_pool.jsonl"),
-    ("anneal",           "anneal_pool.jsonl"),
+# (label, bucket_key, tier_name)
+TIER_DEFS: list[tuple[str, str, str]] = [
+    ("stage1_icon_high",          "stage1_icon",         "high"),
+    ("stage1_icon_medium",        "stage1_icon",         "medium"),
+    ("stage1_icon_low",           "stage1_icon",         "low"),
+    ("stage2_illustration_high",   "stage2_illustration", "high"),
+    ("stage2_illustration_medium", "stage2_illustration", "medium"),
+    ("stage2_illustration_low",    "stage2_illustration", "low"),
 ]
 
+TIER_COLORS = {"high": "coral", "medium": "steelblue", "low": "mediumseagreen"}
+TIER_LABELS = {"high": "高优", "medium": "中优", "low": "低优"}
+
+
+def _tier_path(root: Path, bucket: str, tier: str) -> Path:
+    return root / f"{bucket}_{tier}.jsonl"
+
+
+# ── 漏斗统计 ──────────────────────────────────────────────────────────────────
 
 def compute_funnel(root: Path) -> list[tuple[str, int]]:
     funnel = []
     for stage, fname in STAGE_FILES:
         count = _count_lines(root / fname)
         funnel.append((stage, count))
-    for name, fname in POOL_FILES:
-        count = _count_lines(root / fname)
-        funnel.append((name, count))
     return funnel
 
 
@@ -112,9 +125,9 @@ def compute_metrics(root: Path) -> dict:
     # Funnel
     funnel = compute_funnel(root)
     metrics["funnel"] = funnel
+    stages = dict(funnel)
 
     # 去重率
-    stages = dict(funnel)
     extract_n = stages.get("extract", 0)
     exact_n   = stages.get("dedup_exact", 0)
     near_n    = stages.get("dedup_near", 0)
@@ -123,11 +136,18 @@ def compute_metrics(root: Path) -> dict:
     if exact_n > 0:
         metrics["near_dedup_rate"] = round(1 - near_n / exact_n, 4)
 
-    # Pool 不变量验证
+    # 六层条数统计 & 不变量验证
+    tier_counts: dict[str, dict[str, int]] = {}
+    total_tier = 0
+    for label, bucket, tier in TIER_DEFS:
+        path = _tier_path(root, bucket, tier)
+        n = _count_lines(path)
+        tier_counts.setdefault(bucket, {})[tier] = n
+        total_tier += n
+    metrics["tier_counts"] = tier_counts
     pool_n = stages.get("pool_1000k", 0)
-    hp_n   = stages.get("high_priority", 0)
-    anneal_n = stages.get("anneal", 0)
-    metrics["pool_invariant_ok"] = (pool_n == hp_n + anneal_n)
+    metrics["tier_invariant_ok"] = (total_tier == pool_n)
+    metrics["total_tier_records"] = total_tier
 
     # Cluster 覆盖率（从 cluster_assignments.jsonl 读取）
     cluster_path = root / "cluster_assignments.jsonl"
@@ -163,31 +183,39 @@ def compute_metrics(root: Path) -> dict:
                 "coverage_pct": round(100 * len(pool_cids) / total_k, 1) if total_k else 0,
             }
 
-    # Distance 统计（anneal vs hp）
-    for pool_name, fname in [("high_priority", "high_priority_pool.jsonl"),
-                              ("anneal", "anneal_pool.jsonl")]:
-        records = _read_jsonl_records(root / fname)
-        if records:
-            distances = [r.get("_meta", {}).get("distance_to_centroid", 0) for r in records]
-            lengths = [len(r.get("instruction", "")) for r in records]
-            import statistics
-            metrics[f"{pool_name}_distance"] = {
-                "mean": round(statistics.mean(distances), 6),
-                "median": round(statistics.median(distances), 6),
-            }
-            metrics[f"{pool_name}_instr_len"] = {
-                "mean": round(statistics.mean(lengths), 1),
-                "std": round(statistics.stdev(lengths) if len(lengths) > 1 else 0, 1),
-                "min": min(lengths),
-                "max": max(lengths),
-            }
+    # 各层 distance 和 instruction 长度统计
+    tier_distance: dict[str, dict[str, dict]] = {}
+    tier_instr_len: dict[str, dict[str, dict]] = {}
+    for label, bucket, tier in TIER_DEFS:
+        path = _tier_path(root, bucket, tier)
+        records = _read_jsonl_records(path)
+        if not records:
+            continue
+        distances = [r.get("_meta", {}).get("distance_to_centroid", 0.0) for r in records]
+        lengths = [len(r.get("instruction", "")) for r in records]
+
+        tier_distance.setdefault(bucket, {})[tier] = {
+            "mean":   round(statistics.mean(distances), 6),
+            "median": round(statistics.median(distances), 6),
+        }
+        tier_instr_len.setdefault(bucket, {})[tier] = {
+            "mean": round(statistics.mean(lengths), 1),
+            "std":  round(statistics.stdev(lengths) if len(lengths) > 1 else 0, 1),
+            "min":  min(lengths),
+            "max":  max(lengths),
+        }
+
+    metrics["tier_distance"] = tier_distance
+    metrics["tier_instr_len"] = tier_instr_len
 
     # Source mix（从 pool_1000k 统计）
-    sources = _read_jsonl_field(pool_path, "_meta", "source")
-    if sources:
-        counter = Counter(sources)
-        total_s = len(sources)
-        metrics["source_mix"] = {src: round(100 * n / total_s, 1) for src, n in counter.items()}
+    if pool_path.exists():
+        sources = _read_jsonl_field(pool_path, "_meta", "source")
+        if sources:
+            counter = Counter(sources)
+            total_s = len(sources)
+            metrics["source_mix"] = {src: round(100 * n / total_s, 1)
+                                     for src, n in counter.items()}
 
     return metrics
 
@@ -195,20 +223,19 @@ def compute_metrics(root: Path) -> dict:
 # ── 报告文本 ──────────────────────────────────────────────────────────────────
 
 def generate_report_text(metrics: dict) -> str:
-    lines = ["=" * 60, "种子 Query 质量报告", "=" * 60, ""]
+    lines = ["=" * 64, "种子 Query 质量报告", "=" * 64, ""]
 
     # Funnel
     lines.append("=== 流水线漏斗 ===")
     funnel = metrics.get("funnel", [])
     prev_n = None
     for stage, n in funnel:
-        if prev_n and prev_n > 0 and stage not in ("pool_1000k", "high_priority", "anneal"):
+        if prev_n and prev_n > 0 and stage != "pool_1000k":
             pct = f"  ({-100 * (1 - n / prev_n):.1f}%)"
         else:
             pct = ""
         lines.append(f"  {stage:<20} {n:>10,}{pct}")
-        if stage not in ("high_priority", "anneal"):
-            prev_n = n
+        prev_n = n
     lines.append("")
 
     # 去重率
@@ -222,15 +249,27 @@ def generate_report_text(metrics: dict) -> str:
                      f"{'✓ 正常(3-20%)' if 0.03 <= near_rate <= 0.20 else '⚠ 偏离预期'}")
     lines.append("")
 
-    # Pool 不变量
-    ok = metrics.get("pool_invariant_ok", False)
-    lines.append(f"Pool 不变量 (pool = anneal + hp): {'✓ 通过' if ok else '✗ 失败！'}")
+    # 六层分级计数
+    lines.append("=== 六层分级计数 ===")
+    tier_counts = metrics.get("tier_counts", {})
+    total_tier = metrics.get("total_tier_records", 0)
+    pool_n = dict(metrics.get("funnel", [])).get("pool_1000k", 0)
+    for bucket in sorted(tier_counts):
+        tiers = tier_counts[bucket]
+        h = tiers.get("high", 0)
+        m = tiers.get("medium", 0)
+        lo = tiers.get("low", 0)
+        lines.append(f"  {bucket}")
+        lines.append(f"    高优: {h:>8,}  中优: {m:>8,}  低优: {lo:>8,}  合计: {h+m+lo:>8,}")
+    ok = metrics.get("tier_invariant_ok", False)
+    lines.append(f"  六层合计 {total_tier:,} vs pool_1000k {pool_n:,}: "
+                 f"{'✓ 一致' if ok else '✗ 不一致！'}")
     lines.append("")
 
     # Cluster 覆盖率
     coverage = metrics.get("pool_cluster_coverage", {})
     if coverage:
-        lines.append("=== Cluster 覆盖率 ===")
+        lines.append("=== Cluster 覆盖率（pool_1000k）===")
         for bk, info in sorted(coverage.items()):
             pct = info["coverage_pct"]
             flag = "✓" if pct >= 95 else "⚠"
@@ -238,38 +277,48 @@ def generate_report_text(metrics: dict) -> str:
                          f"clusters  ({pct}%) {flag}")
         lines.append("")
 
-    # Distance 分离
-    hp_dist   = metrics.get("high_priority_distance", {})
-    ann_dist  = metrics.get("anneal_distance", {})
-    if hp_dist and ann_dist:
-        lines.append("=== Distance to Centroid（越小越中心）===")
-        lines.append(f"  high_priority 均值: {hp_dist['mean']:.6f}  (中位数 {hp_dist['median']:.6f})")
-        lines.append(f"  anneal        均值: {ann_dist['mean']:.6f}  (中位数 {ann_dist['median']:.6f})")
-        sep = ann_dist["mean"] > hp_dist["mean"]
-        lines.append(f"  hp < anneal: {'✓ 正常' if sep else '⚠ 无分离，采样未区分中心性'}")
+    # Distance 层间分离
+    tier_dist = metrics.get("tier_distance", {})
+    if tier_dist:
+        lines.append("=== Distance to Centroid（层间分离，越小越中心）===")
+        for bucket in sorted(tier_dist):
+            lines.append(f"  {bucket}:")
+            tiers = tier_dist[bucket]
+            h_mean  = tiers.get("high",   {}).get("mean", None)
+            m_mean  = tiers.get("medium", {}).get("mean", None)
+            lo_mean = tiers.get("low",    {}).get("mean", None)
+            for tier, label in [("high", "高优"), ("medium", "中优"), ("low", "低优")]:
+                info = tiers.get(tier, {})
+                if info:
+                    lines.append(f"    {label}: 均值 {info['mean']:.6f}  "
+                                 f"中位数 {info['median']:.6f}")
+            # 检查单调性
+            if h_mean is not None and m_mean is not None and lo_mean is not None:
+                monotone = h_mean < m_mean < lo_mean
+                lines.append(f"    层间单调性 (高<中<低): {'✓ 正常' if monotone else '⚠ 异常'}")
         lines.append("")
 
     # Instruction 长度
-    hp_len  = metrics.get("high_priority_instr_len", {})
-    ann_len = metrics.get("anneal_instr_len", {})
-    if ann_len:
-        lines.append("=== Instruction 长度（anneal 池）===")
-        lines.append(f"  均值: {ann_len['mean']:.1f} chars  "
-                     f"std: {ann_len['std']:.1f}  "
-                     f"[{ann_len['min']}, {ann_len['max']}]")
-        std_flag = "✓ 多样性高" if ann_len["std"] > 30 else "⚠ 长度集中"
-        lines.append(f"  std 评估: {std_flag}")
+    tier_len = metrics.get("tier_instr_len", {})
+    if tier_len:
+        lines.append("=== Instruction 长度（高优层，按 bucket）===")
+        for bucket in sorted(tier_len):
+            info = tier_len[bucket].get("high", {})
+            if info:
+                std_flag = "✓ 多样性高" if info["std"] > 30 else "⚠ 长度集中"
+                lines.append(f"  {bucket}: 均值 {info['mean']:.1f}  "
+                             f"std {info['std']:.1f}  [{info['min']}, {info['max']}]  {std_flag}")
         lines.append("")
 
     # Source mix
     src = metrics.get("source_mix", {})
     if src:
-        lines.append("=== Source Mix（1000k 池）===")
+        lines.append("=== Source Mix（pool_1000k）===")
         for s, pct in sorted(src.items()):
             lines.append(f"  {s}: {pct}%")
         lines.append("")
 
-    lines.append("=" * 60)
+    lines.append("=" * 64)
     return "\n".join(lines)
 
 
@@ -284,12 +333,11 @@ def _get_mpl():
 
 def plot_funnel(metrics: dict, out_dir: Path) -> None:
     plt = _get_mpl()
-    funnel = [(s, n) for s, n in metrics.get("funnel", [])
-              if s not in ("high_priority", "anneal")]
+    funnel = metrics.get("funnel", [])
     if not funnel:
         return
     stages, counts = zip(*funnel)
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(11, 5))
     bars = ax.bar(stages, counts, color="steelblue")
     ax.set_ylabel("Records")
     ax.set_title("Pipeline Funnel")
@@ -304,29 +352,43 @@ def plot_funnel(metrics: dict, out_dir: Path) -> None:
 
 
 def plot_bucket_dist(root: Path, out_dir: Path) -> None:
+    """每个 bucket 的三层分级柱状图（grouped bars：高/中/低优）。"""
     plt = _get_mpl()
-    pool_path = root / "pool_1000k.jsonl"
-    hp_path   = root / "high_priority_pool.jsonl"
-    if not pool_path.exists():
+
+    # 收集每个 bucket 每层的条数
+    bucket_tier_counts: dict[str, dict[str, int]] = {}
+    for _label, bucket, tier in TIER_DEFS:
+        path = _tier_path(root, bucket, tier)
+        n = _count_lines(path)
+        bucket_tier_counts.setdefault(bucket, {})[tier] = n
+
+    if not bucket_tier_counts:
         return
 
-    def bucket_counts(path):
-        c = Counter(_read_jsonl_field(path, "_meta", "bucket_key"))
-        return c
+    buckets = sorted(bucket_tier_counts)
+    tiers = ["high", "medium", "low"]
+    n_buckets = len(buckets)
+    n_tiers = len(tiers)
+    width = 0.22
 
-    pool_cnt = bucket_counts(pool_path)
-    hp_cnt   = bucket_counts(hp_path)
-    buckets  = sorted(set(pool_cnt) | set(hp_cnt))
+    import numpy as np
+    x = np.arange(n_buckets)
 
-    x = range(len(buckets))
-    w = 0.35
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.bar([i - w/2 for i in x], [pool_cnt.get(b, 0) for b in buckets], w, label="pool_1000k")
-    ax.bar([i + w/2 for i in x], [hp_cnt.get(b, 0)   for b in buckets], w, label="high_priority")
-    ax.set_xticks(list(x))
-    ax.set_xticklabels(buckets, rotation=20, ha="right")
+    fig, ax = plt.subplots(figsize=(max(8, n_buckets * 3), 5))
+    for i, tier in enumerate(tiers):
+        vals = [bucket_tier_counts[b].get(tier, 0) for b in buckets]
+        offset = (i - n_tiers / 2 + 0.5) * width
+        bars = ax.bar(x + offset, vals, width, label=TIER_LABELS[tier],
+                      color=TIER_COLORS[tier])
+        for bar, v in zip(bars, vals):
+            if v > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                        f"{v:,}", ha="center", va="bottom", fontsize=7)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(buckets, rotation=15, ha="right")
     ax.set_ylabel("Records")
-    ax.set_title("Bucket Distribution")
+    ax.set_title("Six-Tier Distribution by Bucket")
     ax.legend()
     plt.tight_layout()
     plt.savefig(out_dir / "02_bucket_dist.png", dpi=120)
@@ -358,7 +420,7 @@ def plot_cluster_size_hist(root: Path, out_dir: Path) -> None:
 
     for ax, (bk, sizes) in zip(axes, sorted(domain_sizes.items())):
         ax.hist(sizes, bins=30, color="coral", edgecolor="white")
-        ax.set_title(f"{bk}\n(unique sizes shown per record)")
+        ax.set_title(f"{bk}")
         ax.set_xlabel("Cluster size")
         ax.set_ylabel("Count")
 
@@ -370,59 +432,78 @@ def plot_cluster_size_hist(root: Path, out_dir: Path) -> None:
 
 
 def plot_instruction_len(root: Path, out_dir: Path) -> None:
+    """instruction 长度分布：每个 bucket 一个子图，各层叠加显示。"""
     plt = _get_mpl()
-    hp_path     = root / "high_priority_pool.jsonl"
-    anneal_path = root / "anneal_pool.jsonl"
 
-    def get_lens(path):
-        return [len(r.get("instruction", ""))
-                for r in _read_jsonl_records(path)]
+    # 按 bucket 收集各层数据
+    bucket_tier_lens: dict[str, dict[str, list[int]]] = {}
+    for _label, bucket, tier in TIER_DEFS:
+        path = _tier_path(root, bucket, tier)
+        records = _read_jsonl_records(path)
+        if records:
+            lens = [len(r.get("instruction", "")) for r in records]
+            bucket_tier_lens.setdefault(bucket, {})[tier] = lens
 
-    hp_lens     = get_lens(hp_path)
-    anneal_lens = get_lens(anneal_path)
-    if not hp_lens and not anneal_lens:
+    if not bucket_tier_lens:
         return
 
-    fig, ax = plt.subplots(figsize=(9, 5))
-    if anneal_lens:
-        ax.hist(anneal_lens, bins=50, alpha=0.6, label="anneal", color="steelblue", density=True)
-    if hp_lens:
-        ax.hist(hp_lens, bins=50, alpha=0.6, label="high_priority", color="coral", density=True)
-    ax.set_xlabel("Instruction length (chars)")
-    ax.set_ylabel("Density")
-    ax.set_title("Instruction Length Distribution")
-    ax.legend()
+    buckets = sorted(bucket_tier_lens)
+    n = len(buckets)
+    fig, axes = plt.subplots(1, n, figsize=(8 * n, 5), squeeze=False)
+
+    for ax, bucket in zip(axes[0], buckets):
+        tier_lens = bucket_tier_lens[bucket]
+        for tier in ["high", "medium", "low"]:
+            lens = tier_lens.get(tier, [])
+            if lens:
+                ax.hist(lens, bins=50, alpha=0.55, density=True,
+                        label=TIER_LABELS[tier], color=TIER_COLORS[tier])
+        ax.set_xlabel("Instruction length (chars)")
+        ax.set_ylabel("Density")
+        ax.set_title(f"{bucket}\nInstruction Length by Tier")
+        ax.legend()
+
+    plt.suptitle("Instruction Length Distribution (per bucket × tier)", y=1.02)
     plt.tight_layout()
-    plt.savefig(out_dir / "04_instruction_len.png", dpi=120)
+    plt.savefig(out_dir / "04_instruction_len.png", dpi=120, bbox_inches="tight")
     plt.close()
     logger.info("[analyze] 04_instruction_len.png 已写出")
 
 
 def plot_distance_hist(root: Path, out_dir: Path) -> None:
+    """distance_to_centroid 分布：每个 bucket 一个子图，各层叠加。高优峰值应在最左侧。"""
     plt = _get_mpl()
-    hp_path     = root / "high_priority_pool.jsonl"
-    anneal_path = root / "anneal_pool.jsonl"
 
-    def get_distances(path):
-        return [r.get("_meta", {}).get("distance_to_centroid", 0)
-                for r in _read_jsonl_records(path)]
+    bucket_tier_dists: dict[str, dict[str, list[float]]] = {}
+    for _label, bucket, tier in TIER_DEFS:
+        path = _tier_path(root, bucket, tier)
+        records = _read_jsonl_records(path)
+        if records:
+            dists = [r.get("_meta", {}).get("distance_to_centroid", 0.0) for r in records]
+            bucket_tier_dists.setdefault(bucket, {})[tier] = dists
 
-    hp_dist     = get_distances(hp_path)
-    anneal_dist = get_distances(anneal_path)
-    if not hp_dist and not anneal_dist:
+    if not bucket_tier_dists:
         return
 
-    fig, ax = plt.subplots(figsize=(9, 5))
-    if anneal_dist:
-        ax.hist(anneal_dist, bins=50, alpha=0.6, label="anneal", color="steelblue", density=True)
-    if hp_dist:
-        ax.hist(hp_dist, bins=50, alpha=0.6, label="high_priority", color="coral", density=True)
-    ax.set_xlabel("Distance to centroid")
-    ax.set_ylabel("Density")
-    ax.set_title("Distance to Centroid Distribution\n(hp peak should be left of anneal)")
-    ax.legend()
+    buckets = sorted(bucket_tier_dists)
+    n = len(buckets)
+    fig, axes = plt.subplots(1, n, figsize=(8 * n, 5), squeeze=False)
+
+    for ax, bucket in zip(axes[0], buckets):
+        tier_dists = bucket_tier_dists[bucket]
+        for tier in ["high", "medium", "low"]:
+            dists = tier_dists.get(tier, [])
+            if dists:
+                ax.hist(dists, bins=50, alpha=0.55, density=True,
+                        label=TIER_LABELS[tier], color=TIER_COLORS[tier])
+        ax.set_xlabel("Distance to centroid")
+        ax.set_ylabel("Density")
+        ax.set_title(f"{bucket}\n高优峰值应在最左侧")
+        ax.legend()
+
+    plt.suptitle("Distance to Centroid by Tier (high peak should be leftmost)", y=1.02)
     plt.tight_layout()
-    plt.savefig(out_dir / "05_distance_hist.png", dpi=120)
+    plt.savefig(out_dir / "05_distance_hist.png", dpi=120, bbox_inches="tight")
     plt.close()
     logger.info("[analyze] 05_distance_hist.png 已写出")
 
@@ -445,7 +526,7 @@ def plot_source_mix(root: Path, out_dir: Path) -> None:
 
 
 def plot_umap(root: Path, out_dir: Path, sample_n: int = 50_000) -> None:
-    """可选：UMAP 投影（需要 umap-learn 和 embeddings 目录）。"""
+    """可选：UMAP 投影（需要 umap-learn 和 embeddings 目录）。按 bucket 着色。"""
     try:
         import umap
     except ImportError:
@@ -469,7 +550,6 @@ def plot_umap(root: Path, out_dir: Path, sample_n: int = 50_000) -> None:
         meta = rec.get("_meta", {})
         id_to_bucket[meta.get("id", "")] = meta.get("bucket_key", "unknown")
 
-    # 采样
     import numpy as np
     import random
     rng = random.Random(42)
@@ -514,22 +594,17 @@ def run_analyze(output_root: str) -> None:
 
     logger.info(f"[analyze] 分析 {root} ...")
 
-    # 计算指标
     metrics = compute_metrics(root)
 
-    # 写报告文本
     report = generate_report_text(metrics)
     report_path = out_dir / "report.txt"
     report_path.write_text(report, encoding="utf-8")
     print(report)
 
-    # 保存 metrics JSON
-    import json as _json
     (out_dir / "metrics.json").write_text(
-        _json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    # 生成图表
     try:
         plot_funnel(metrics, out_dir)
         plot_bucket_dist(root, out_dir)
