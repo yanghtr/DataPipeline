@@ -288,9 +288,13 @@ def api_info():
 def api_rows():
     page = max(0, int(request.args.get("page", 0)))
     size = max(1, min(200, int(request.args.get("size", 20))))
+    stage_filter = request.args.get("stage", "").strip()
     with _state_lock:
+        ids = _row_ids
+        if stage_filter:
+            ids = [rid for rid in ids if stage_filter in rid]
         start = page * size
-        page_ids = _row_ids[start: start + size]
+        page_ids = ids[start: start + size]
         rows = []
         for rid in page_ids:
             instruction = ""
@@ -312,7 +316,7 @@ def api_rows():
         return jsonify({
             "page": page,
             "size": size,
-            "total_rows": len(_row_ids),
+            "total_rows": len(ids),
             "rows": rows,
         })
 

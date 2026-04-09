@@ -250,6 +250,15 @@
       <option value="20" selected>20</option>
       <option value="50">50</option>
     </select>
+
+    <div class="toolbar-sep"></div>
+
+    <span class="toolbar-label">阶段:</span>
+    <select id="stage-filter-select">
+      <option value="">全部</option>
+      <option value="stage1_icon">stage1_icon</option>
+      <option value="stage2_illustration">stage2_illustration</option>
+    </select>
   </div>
 
   <!-- ── Add column bar ── -->
@@ -290,6 +299,7 @@ const S = {
   page:      0,
   pageSize:  20,
   totalRows: 0,
+  stageFilter: '', // '' = all, 'stage1_icon', 'stage2_illustration'
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -330,7 +340,8 @@ async function fetchJSON(url, opts) {
 async function loadPage() {
   setLoading(true);
   try {
-    const data = await fetchJSON(`/api/rows?page=${S.page}&size=${S.pageSize}`);
+    const stageParam = S.stageFilter ? `&stage=${encodeURIComponent(S.stageFilter)}` : '';
+    const data = await fetchJSON(`/api/rows?page=${S.page}&size=${S.pageSize}${stageParam}`);
     S.rows      = data.rows;
     S.totalRows = data.total_rows;
     renderRows();
@@ -579,6 +590,11 @@ document.getElementById('btn-next-page').addEventListener('click', async () => {
 });
 document.getElementById('page-size-select').addEventListener('change', async function () {
   S.pageSize = parseInt(this.value);
+  S.page = 0;
+  await loadPage();
+});
+document.getElementById('stage-filter-select').addEventListener('change', async function () {
+  S.stageFilter = this.value;
   S.page = 0;
   await loadPage();
 });
