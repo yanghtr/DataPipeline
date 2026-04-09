@@ -1,6 +1,6 @@
 # seed_selection — 种子 Query 筛选模块
 
-从 SAgoge canonical schema 数据中，筛选约 **1M 种子 query**（800k anneal + 200k high-priority），用于后续 SVG teacher distillation。
+从 SAgoge canonical schema 数据中，筛选约 **1M 种子 query**，按域和质量分六层输出，用于后续 SVG teacher distillation。
 
 需求文档：[`docs/task_specs/svg_seed_selection.md`](../docs/task_specs/svg_seed_selection.md)
 
@@ -17,7 +17,7 @@ canonical JSONL (7.7M)
     ↓ svg_filter     按 svg_len 过滤 icon 域最简单 10%
     ↓ embed          Qwen3-Embedding-0.6B，256 维，shard 输出
     ↓ cluster        每 bucket KMeans（三档后端可选：MiniBatchKMeans / faiss-cpu / NPU），记录 cluster_id / centrality
-    ↓ sample         按比例采样 → pool_1000k / anneal_pool / high_priority_pool
+    ↓ sample         按比例采样 → pool_1000k + 六层分域分级文件
 ```
 
 ### 两桶策略
@@ -30,15 +30,27 @@ canonical JSONL (7.7M)
 > **为什么 stage2_icon 消失了？**
 > input_paths 中 stage1/icon 文件排在 stage2/icon 之前，exact dedup 使用 first-come-wins 策略。stage2/icon 与 stage1/icon 指令完全重叠，因此在 exact dedup 阶段被全量丢弃。downstream 阶段不再出现 `stage2_icon` domain。
 
-### 采样配比
+### 采样配比与六层分级
 
-| 池 | 数量 | stage1_icon | stage2_illustration | 用途 |
-|---|---|---|---|---|
-| `pool_1000k` | ~1,000,000 | ~700K | 300K（手动提权） | 总采样池 |
-| `high_priority_pool` | 200,000 | ~140K | ~60K | 大模型蒸馏（优先） |
-| `anneal_pool` | ~800,000 | ~560K | ~240K | 开源模型蒸馏（退火） |
+| 层 | 域 | 数量 | 用途 |
+|---|---|---|---|
+| `pool_1000k` | 全部 | ~1,000,000 | 总采样池（六层合并） |
+| `stage1_icon_high` | stage1_icon | 100,000 | 最优代表性样本 |
+| `stage1_icon_medium` | stage1_icon | 200,000 | 次优样本 |
+| `stage1_icon_low` | stage1_icon | 400,000 | 剩余样本 |
+| `stage2_illustration_high` | stage2_illustration | 100,000 | 最优代表性样本 |
+| `stage2_illustration_medium` | stage2_illustration | 100,000 | 次优样本 |
+| `stage2_illustration_low` | stage2_illustration | 100,000 | 剩余样本 |
 
 illustration 数据量约占原始数据 17%，但语义复杂度更高、训练价值更大，通过 `bucket_quota_overrides` 手动提升至 300K（占 30%）。
+
+**常见组合示例**：
+
+| 训练集需求 | 组合方式 | 总量 |
+|---|---|---|
+| SFT 高质量集（同旧 high_priority） | icon_high + illus_high | 200K |
+| 扩展 SFT | icon(高+中) + illus(高+中) | 500K |
+| 完整训练池 | 六层全部 | 1000K |
 
 ### 并行计算设计
 
@@ -155,7 +167,7 @@ seed_selection/
   cluster.py         # Step 7：KMeans 聚类（三档后端：MiniBatchKMeans / faiss / NPU）
   kmeans_npu.py      # NPU/GPU 加速 KMeans（标准 Lloyd's，torch_npu/torch.cuda）
   kmeans_faiss.py    # faiss-cpu 精确 KMeans（CPU BLAS 加速）
-  sample.py          # Step 8：分层采样（200K HP + 800K anneal）
+  sample.py          # Step 8：分层采样（pool_1000k + 六层分域分级）
   analyze.py         # 质量报告生成
   main.py            # CLI 入口
   configs/
@@ -210,10 +222,11 @@ clustering:
 
 # 采样配比
 sampling:
-  high_priority_pool_size: 200000   # 200K 大模型蒸馏
-  anneal_pool_size: 800000          # 800K 开源模型蒸馏
   bucket_quota_overrides:
     stage2_illustration: 300000     # illustration 提权到 30%
+  tier_sizes:
+    stage1_icon:         [100000, 200000, 400000]   # 高100K + 中200K + 低400K
+    stage2_illustration: [100000, 100000, 100000]   # 高100K + 中100K + 低100K
 ```
 
 ### 运行全流水线
@@ -292,9 +305,13 @@ run 选项：
 | `svg_filtered_kept.jsonl` | SVG 复杂度过滤后 |
 | `embeddings/shard_XXXX.npz` | embedding shard（id + float32 矩阵）|
 | `cluster_assignments.jsonl` | 含 bucket_key / cluster_id / cluster_size / distance_to_centroid |
-| `pool_1000k.jsonl` | 总采样池（anneal + high-priority）|
-| `anneal_pool.jsonl` | ~800k，退火训练（开源模型蒸馏） |
-| `high_priority_pool.jsonl` | 200k，优先训练（大模型蒸馏） |
+| `pool_1000k.jsonl` | 总采样池（六层合并，~1M）|
+| `stage1_icon_high.jsonl` | stage1_icon 高优（100K）|
+| `stage1_icon_medium.jsonl` | stage1_icon 中优（200K）|
+| `stage1_icon_low.jsonl` | stage1_icon 低优（400K）|
+| `stage2_illustration_high.jsonl` | stage2_illustration 高优（100K）|
+| `stage2_illustration_medium.jsonl` | stage2_illustration 中优（100K）|
+| `stage2_illustration_low.jsonl` | stage2_illustration 低优（100K）|
 | `run_stats.json` | 运行参数快照 |
 
 ### 中间记录 schema
@@ -340,23 +357,31 @@ sampling:
 
 **第三层：cluster 内按 distance_to_centroid 升序选 top-k**
 
-### high_priority_pool 两阶段选取
+### 六层分级（分域三阶段 Round-Robin）
+
+对 `pool_1000k` 中每个 bucket 独立执行：
 
 ```
-Phase 1：每个 (bucket, cluster) 取 distance_to_centroid 最小的 1 条
-         → 约 18K 条（覆盖全部 cluster）
+每个 bucket 独立：
+  cluster 内按 distance_to_centroid 升序排列
 
-Phase 2：Round-robin 轮转所有 cluster，
-         依次从每个 cluster 取下一条最近记录，
-         直到达到 200K
-         → 各 cluster 贡献条数均衡，不因 distance 绝对值而倾斜
+  Round-Robin 循环遍历所有 cluster，连续前进同一组指针：
+    阶段 1：取前 tier_sizes[bucket][0] 条 → 高优（high）
+    阶段 2：取下一批 tier_sizes[bucket][1] 条 → 中优（medium）
+    阶段 3：剩余所有记录 → 低优（low）
 ```
 
-相比全局 distance 排序补充（旧方案），round-robin 避免 dense cluster 在 Phase 2 中贡献过多记录，保证语义多样性。
+- 各 cluster 贡献条数均衡（不因 distance 绝对值倾斜）
+- 层间质量单调：高优平均 `distance_to_centroid` < 中优 < 低优
+- 指针跨阶段连续：高优选完后中优从高优末尾继续，而非重新排序
 
-### anneal_pool
+**阶段覆盖深度估算（stage1_icon，12K clusters）**：
 
-`pool_1000k - high_priority_pool`，无交集。
+| 层 | 数量 | 平均轮次/cluster |
+|---|---|---|
+| 高优 | 100K | ~8 轮 |
+| 中优 | 200K | ~17 轮 |
+| 低优 | 400K | 剩余 |
 
 ---
 
@@ -408,11 +433,12 @@ clustering:
 
 sampling:
   total_pool_size: 1000000
-  anneal_pool_size: 800000
-  high_priority_pool_size: 200000
   random_seed: 42
   bucket_quota_overrides:
     stage2_illustration: 300000  # 手动提权到 30%
+  tier_sizes:
+    stage1_icon:         [100000, 200000, 400000]   # 高100K + 中200K + 低400K = 700K
+    stage2_illustration: [100000, 100000, 100000]   # 高100K + 中100K + 低100K = 300K
 ```
 
 ---

@@ -64,21 +64,33 @@ def test_full_pipeline(tmp_path, all_input_paths):
     records = [json.loads(l) for l in cluster_out.read_text().splitlines() if l.strip()]
     n = len(records)
     pool_size = max(1, n // 2)
-    hp_size = max(1, n // 4)
+    # 小测试数据集：高优 1 条、中优 1 条、低优剩余
+    tier_sizes = {
+        "stage1_icon":         (1, 1, max(0, pool_size - 2)),
+        "stage2_illustration": (1, 1, max(0, pool_size - 2)),
+    }
 
     stats_sample = run_sample(cluster_out, root,
                                total_pool_size=pool_size,
-                               high_priority_size=hp_size,
+                               tier_sizes=tier_sizes,
                                random_seed=42)
 
-    assert stats_sample.pool_1000k == stats_sample.anneal + stats_sample.high_priority
     assert (root / "pool_1000k.jsonl").exists()
-    assert (root / "anneal_pool.jsonl").exists()
-    assert (root / "high_priority_pool.jsonl").exists()
+    # 验证六层文件存在（至少一个 bucket 有数据）
+    tier_files = list(root.glob("stage*_high.jsonl")) + list(root.glob("stage*_medium.jsonl"))
+    assert len(tier_files) > 0
+
+    # 验证三层条数之和等于 pool_1000k 条数
+    total_tier_recs = sum(
+        cnt
+        for bucket_tiers in stats_sample.tier_counts.values()
+        for cnt in bucket_tiers.values()
+    )
+    assert total_tier_recs == stats_sample.pool_1000k
 
     # Verify _meta structure in final outputs
     valid_domains = {"stage1_icon", "stage2_illustration"}
-    for line in (root / "anneal_pool.jsonl").read_text().splitlines():
+    for line in (root / "pool_1000k.jsonl").read_text().splitlines():
         if not line.strip():
             continue
         rec = json.loads(line)

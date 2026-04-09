@@ -52,12 +52,15 @@ class ClusterConfig:
 @dataclass
 class SamplingConfig:
     total_pool_size: int = 1_000_000
-    anneal_pool_size: int = 800_000
-    high_priority_pool_size: int = 200_000
     random_seed: int = 42
     # 显式覆盖 bucket 配额（不填则按数据量比例分配）
     # 例：{"stage2_illustration": 300000} 将 illustration 提升到 300K，剩余 700K 分配给 stage1_icon
     bucket_quota_overrides: dict[str, int] = field(default_factory=dict)
+    # 每个 bucket 三优先级层的数量 (高优, 中优, 低优)，三者之和应等于该 bucket 在 pool_1000k 中的配额
+    tier_sizes: dict[str, tuple[int, int, int]] = field(default_factory=lambda: {
+        "stage1_icon":         (100_000, 200_000, 400_000),
+        "stage2_illustration": (100_000, 100_000, 100_000),
+    })
 
 
 @dataclass
@@ -115,10 +118,15 @@ def load_config(path: Path) -> PipelineConfig:
         ),
         sampling=SamplingConfig(
             total_pool_size=sa.get("total_pool_size", 1_000_000),
-            anneal_pool_size=sa.get("anneal_pool_size", 800_000),
-            high_priority_pool_size=sa.get("high_priority_pool_size", 200_000),
             random_seed=sa.get("random_seed", 42),
             bucket_quota_overrides=sa.get("bucket_quota_overrides", {}),
+            tier_sizes={
+                k: tuple(v)
+                for k, v in sa.get("tier_sizes", {
+                    "stage1_icon":         [100_000, 200_000, 400_000],
+                    "stage2_illustration": [100_000, 100_000, 100_000],
+                }).items()
+            },
         ),
         num_workers=raw.get("num_workers", 4),
     )

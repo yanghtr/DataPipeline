@@ -51,10 +51,15 @@ clustering:
 
 sampling:
   total_pool_size: 1000000
-  anneal_pool_size: 800000           # 退火训练池（开源模型蒸馏）
-  high_priority_pool_size: 200000    # 高优先池（大模型蒸馏）
   random_seed: 42
   # 显式覆盖 bucket 配额（不填则按数据量比例分配）
   # illustration 数据量约占 17%，但语义复杂度更高、训练价值更大，手动提升到 30%
   bucket_quota_overrides:
     stage2_illustration: 300000      # 300K（约 30%），剩余 700K 自动分给 stage1_icon
+  # 每个 bucket 三优先级层的数量 [高优, 中优, 低优]，三者之和 = 该 bucket 的配额
+  # 高优：各 cluster 最贴近质心的样本，多样性最高
+  # 中优：次优代表性样本
+  # 低优：剩余样本（仍为高质量，只是相对质心距离更远）
+  tier_sizes:
+    stage1_icon:         [100000, 200000, 400000]   # 高100K + 中200K + 低400K = 700K
+    stage2_illustration: [100000, 100000, 100000]   # 高100K + 中100K + 低100K = 300K

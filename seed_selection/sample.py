@@ -1,19 +1,26 @@
 """
 Step 8 — sample.py
 
-从聚类结果中采样，产出三个文件：
-  - pool_1000k.jsonl         总采样池（anneal + high-priority 合并）
-  - anneal_pool.jsonl        800k anneal 池（从 1000k 中去掉 high-priority 部分）
-  - high_priority_pool.jsonl 200k high-priority 池（各 cluster 最中心样本）
+从聚类结果中采样，产出七个文件：
+  - pool_1000k.jsonl                   总采样池（六层合并）
+  - stage1_icon_high.jsonl             stage1_icon 高优（100K）
+  - stage1_icon_medium.jsonl           stage1_icon 中优（200K）
+  - stage1_icon_low.jsonl              stage1_icon 低优（400K）
+  - stage2_illustration_high.jsonl     stage2_illustration 高优（100K）
+  - stage2_illustration_medium.jsonl   stage2_illustration 中优（100K）
+  - stage2_illustration_low.jsonl      stage2_illustration 低优（100K）
 
 采样策略：
   1. 各 bucket 按比例分配 quota（支持 bucket_quota_overrides 显式覆盖）
   2. bucket 内各 cluster 按 sqrt(cluster_size) 分配 budget，最少 1
   3. cluster 内按 distance_to_centroid 升序（最近=最中心）选 top-budget
-  4. 200k high-priority 两阶段选取：
-     - Phase 1：每 (bucket, cluster) 取 distance 最小的 1 条 → 约 15K 条
-     - Phase 2：Round-robin 轮转各 cluster，依次取下一条最近记录，直到 200K
-  5. 800k anneal = pool_1000k - high_priority_pool
+  4. 六层分层：对每个 bucket 独立执行三阶段 Round-Robin
+     - 各 cluster 内记录已按 distance_to_centroid 升序排列
+     - 循环遍历所有 cluster（Round-Robin），依次取下一条最近记录：
+       · 前 tier_sizes[bucket][0] 条 → 高优（high）
+       · 接下来 tier_sizes[bucket][1] 条 → 中优（medium）
+       · 剩余 → 低优（low）
+     - 各 cluster 贡献条数均衡，层间质量单调（高优平均距离最小）
 """
 
 from __future__ import annotations
@@ -30,22 +37,27 @@ from loguru import logger
 
 from .io_utils import DOMAINS, read_jsonl, write_jsonl
 
+TIER_NAMES = ("high", "medium", "low")
+
 
 @dataclass
 class SampleStats:
     total_input: int = 0
     pool_1000k: int = 0
-    high_priority: int = 0
-    anneal: int = 0
+    tier_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     budget_per_bucket: dict[str, int] = field(default_factory=dict)
 
     def report(self) -> str:
-        return (
-            f"总输入:           {self.total_input:,}\n"
-            f"1000k 池:         {self.pool_1000k:,}\n"
-            f"high-priority 池: {self.high_priority:,}\n"
-            f"anneal 池:        {self.anneal:,}"
-        )
+        lines = [
+            f"总输入:    {self.total_input:,}",
+            f"1000k 池:  {self.pool_1000k:,}",
+        ]
+        for bucket, tiers in self.tier_counts.items():
+            h = tiers.get("high", 0)
+            m = tiers.get("medium", 0)
+            lo = tiers.get("low", 0)
+            lines.append(f"  {bucket}: 高优 {h:,} / 中优 {m:,} / 低优 {lo:,}")
+        return "\n".join(lines)
 
 
 def _allocate_quota(
@@ -145,85 +157,92 @@ def _allocate_cluster_budget(cluster_sizes: dict[int, int], total_budget: int) -
     return floored
 
 
-def _select_high_priority(
+def _assign_priority_tiers(
     pool_records: list[dict],
-    high_priority_size: int,
-) -> list[dict]:
+    tier_sizes: dict[str, tuple[int, int, int]],
+) -> dict[str, dict[str, list[dict]]]:
     """
-    从 pool_1000k 中选取 high_priority_pool。
+    从 pool_1000k 中，对每个 bucket 独立执行三阶段 Round-Robin，
+    将记录分配到高优（high）/ 中优（medium）/ 低优（low）三层。
 
-    两阶段：
-      Phase 1：每个 (bucket_key, cluster_id) 取 distance_to_centroid 最小的 1 条
-               → 约覆盖全部 cluster（约 15K 条）
-      Phase 2：Round-robin 轮转所有 cluster，依次追加每个 cluster 的下一条最近记录，
-               直到达到 high_priority_size。
-               → 各 cluster 贡献条数均衡，不因 distance 绝对值而倾斜。
+    对每个 bucket：
+      1. 按 distance_to_centroid 升序对各 cluster 内记录排序
+      2. Round-Robin 循环遍历所有 cluster，依次取下一条最近记录
+      3. 前 tier_sizes[bucket][0] 条 → high
+      4. 接下来 tier_sizes[bucket][1] 条 → medium
+      5. 剩余所有记录 → low
 
-    相比全局 distance 排序补充（旧方案），round-robin 避免了 dense cluster
-    （距离绝对值小）在 Phase 2 中贡献过多记录，保证语义多样性。
+    Round-Robin 保证各 cluster 贡献条数均衡（不因 distance 绝对值而倾斜）；
+    高优平均 distance 最小，层间质量单调。
     """
-    # 按 (bucket, cluster) 分组，各 cluster 内已排好序
-    cluster_queues: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    # 1. 按 bucket_key 分组
+    bucket_pool: dict[str, list[dict]] = defaultdict(list)
     for rec in pool_records:
-        meta = rec.get("_meta", {})
-        key = (meta.get("bucket_key", ""), meta.get("cluster_id", 0))
-        cluster_queues[key].append(rec)
+        bk = rec.get("_meta", {}).get("bucket_key", "")
+        bucket_pool[bk].append(rec)
 
-    # 各 cluster 内按 distance 升序排列，建立独立指针
-    for key in cluster_queues:
-        cluster_queues[key].sort(
-            key=lambda r: r.get("_meta", {}).get("distance_to_centroid", 0.0)
-        )
+    result: dict[str, dict[str, list[dict]]] = {}
 
-    cluster_keys = list(cluster_queues.keys())
-    pointers: dict[tuple[str, int], int] = {k: 0 for k in cluster_keys}
+    for bucket, records in bucket_pool.items():
+        sizes = tier_sizes.get(bucket, (0, 0, len(records)))
+        high_size, medium_size = sizes[0], sizes[1]
 
-    hp_records: list[dict] = []
-    hp_ids: set[str] = set()
+        # 2. 按 cluster_id 分组并按 distance 升序排列
+        cluster_queues: dict[int, list[dict]] = defaultdict(list)
+        for rec in records:
+            cid = rec.get("_meta", {}).get("cluster_id", 0)
+            cluster_queues[cid].append(rec)
+        for cid in cluster_queues:
+            cluster_queues[cid].sort(
+                key=lambda r: r.get("_meta", {}).get("distance_to_centroid", 0.0)
+            )
 
-    # Phase 1：每 cluster 取第一条（distance 最小）
-    for key in cluster_keys:
-        queue = cluster_queues[key]
-        if queue:
-            rec = queue[0]
-            hp_records.append(rec)
-            hp_ids.add(rec["_meta"]["id"])
-            pointers[key] = 1
-        if len(hp_records) >= high_priority_size:
-            break
+        cluster_keys = list(cluster_queues.keys())
+        pointers: dict[int, int] = {k: 0 for k in cluster_keys}
+        tiers: dict[str, list[dict]] = {"high": [], "medium": [], "low": []}
 
-    # Phase 2：round-robin 补充至 high_priority_size
-    if len(hp_records) < high_priority_size:
-        # 循环直到无新记录可取或达到目标
-        made_progress = True
-        while len(hp_records) < high_priority_size and made_progress:
-            made_progress = False
-            for key in cluster_keys:
-                if len(hp_records) >= high_priority_size:
-                    break
-                ptr = pointers[key]
-                queue = cluster_queues[key]
-                while ptr < len(queue):
-                    rec = queue[ptr]
-                    ptr += 1
-                    if rec["_meta"]["id"] not in hp_ids:
-                        hp_records.append(rec)
-                        hp_ids.add(rec["_meta"]["id"])
-                        made_progress = True
+        def _fill_tier(tier_name: str, target: int) -> None:
+            if target <= 0:
+                return
+            made_progress = True
+            while len(tiers[tier_name]) < target and made_progress:
+                made_progress = False
+                for key in cluster_keys:
+                    if len(tiers[tier_name]) >= target:
                         break
-                pointers[key] = ptr
+                    ptr = pointers[key]
+                    if ptr < len(cluster_queues[key]):
+                        tiers[tier_name].append(cluster_queues[key][ptr])
+                        pointers[key] = ptr + 1
+                        made_progress = True
 
-    return hp_records
+        # 3. 依次填充高优和中优，指针连续前进
+        _fill_tier("high", high_size)
+        _fill_tier("medium", medium_size)
+
+        # 4. 剩余全部归低优（指针后所有记录）
+        for key in cluster_keys:
+            tiers["low"].extend(cluster_queues[key][pointers[key]:])
+
+        result[bucket] = tiers
+
+    return result
 
 
 def run_sample(
     input_path: Path,
     output_dir: Path,
     total_pool_size: int = 1_000_000,
-    high_priority_size: int = 200_000,
+    tier_sizes: dict[str, tuple[int, int, int]] | None = None,
     random_seed: int = 42,
     bucket_quota_overrides: dict[str, int] | None = None,
 ) -> SampleStats:
+    if tier_sizes is None:
+        tier_sizes = {
+            "stage1_icon":         (100_000, 200_000, 400_000),
+            "stage2_illustration": (100_000, 100_000, 100_000),
+        }
+
     random.seed(random_seed)
     stats = SampleStats()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -245,7 +264,7 @@ def run_sample(
     for k, q in bucket_quotas.items():
         stats.budget_per_bucket[k] = q
 
-    # 3. 采样 1000k
+    # 3. 采样 pool_1000k（三层 cluster 配额分配）
     pool_records: list[dict] = []
 
     for bucket, records in bucket_records.items():
@@ -253,7 +272,6 @@ def run_sample(
         if quota == 0:
             continue
 
-        # 按 cluster 分组
         cluster_groups: dict[int, list[dict]] = defaultdict(list)
         for rec in records:
             cluster_groups[rec.get("_meta", {}).get("cluster_id", 0)].append(rec)
@@ -263,7 +281,6 @@ def run_sample(
 
         for cid, recs in cluster_groups.items():
             budget = min(cluster_budgets.get(cid, 1), len(recs))
-            # 按 distance_to_centroid 升序，取前 budget 条
             sorted_recs = sorted(recs, key=lambda r: r.get("_meta", {}).get("distance_to_centroid", 0))
             pool_records.extend(sorted_recs[:budget])
 
@@ -277,23 +294,24 @@ def run_sample(
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     stats.pool_1000k = len(pool_records)
 
-    # 5. 选 high-priority（two-phase round-robin）
-    hp_records = _select_high_priority(pool_records, high_priority_size)
+    # 5. 分域三阶段 Round-Robin 分层
+    tier_result = _assign_priority_tiers(pool_records, tier_sizes)
 
-    hp_path = output_dir / "high_priority_pool.jsonl"
-    with hp_path.open("w", encoding="utf-8") as f:
-        for rec in hp_records:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    stats.high_priority = len(hp_records)
-
-    # 6. anneal = pool_1000k - high_priority
-    hp_ids_set = {r["_meta"]["id"] for r in hp_records}
-    anneal_path = output_dir / "anneal_pool.jsonl"
-    with anneal_path.open("w", encoding="utf-8") as f:
-        for rec in pool_records:
-            if rec["_meta"]["id"] not in hp_ids_set:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                stats.anneal += 1
+    # 6. 写六个分层文件
+    tier_label_map = {"high": "高优", "medium": "中优", "low": "低优"}
+    for bucket, tiers in tier_result.items():
+        stats.tier_counts[bucket] = {}
+        for tier_name in TIER_NAMES:
+            recs = tiers.get(tier_name, [])
+            fname = f"{bucket}_{tier_name}.jsonl"
+            fpath = output_dir / fname
+            with fpath.open("w", encoding="utf-8") as f:
+                for rec in recs:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            stats.tier_counts[bucket][tier_name] = len(recs)
+            logger.info(
+                f"[sample] {bucket} {tier_label_map[tier_name]} → {fname} ({len(recs):,} 条)"
+            )
 
     logger.info(f"[sample] 完成\n{stats.report()}")
     return stats

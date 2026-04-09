@@ -126,7 +126,7 @@ def run_sample(cfg: PipelineConfig, root: Path, **_) -> None:
         input_path=root / "cluster_assignments.jsonl",
         output_dir=root,
         total_pool_size=cfg.sampling.total_pool_size,
-        high_priority_size=cfg.sampling.high_priority_pool_size,
+        tier_sizes={k: tuple(v) for k, v in cfg.sampling.tier_sizes.items()},
         random_seed=cfg.sampling.random_seed,
         bucket_quota_overrides=cfg.sampling.bucket_quota_overrides or None,
     )

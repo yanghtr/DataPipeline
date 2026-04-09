@@ -116,12 +116,13 @@ SVG 字符数作为 **复杂度代理指标**，是后续过滤阶段的关键�
         │             stage1_icon: K=12,000
         │             stage2_illustration: K=6,000
         ▼
-  ⑧ Sample           两层配额 + 两类输出池
+  ⑧ Sample           三层配额 + 分域六层输出
         │
-  ┌─────┼──────────────┐
-  ▼     ▼              ▼
-pool_1000k   high_priority_pool   anneal_pool
-（~100万）      （20万）               （~80万）
+  ┌─────┼───────────────────────────────────────────┐
+  ▼     ▼                                           ▼
+pool_1000k          stage1_icon             stage2_illustration
+（~100万）       高优/中优/低优               高优/中优/低优
+              (100K / 200K / 400K)         (100K / 100K / 100K)
 ```
 
 **中间记录 schema** — 各阶段逐步追加字段，顶层只有 `instruction`，所有流水线元数据统一存入 `_meta`：
@@ -591,11 +592,23 @@ Lloyd's 迭代（最多 100 轮）：
 
 ### 11.1 功能
 
-从聚类结果中采样约 **100 万条**记录（`pool_1000k`），并进一步划分为：
-- `high_priority_pool`（20 万条）：每个语义簇均有覆盖，多样性最高 → **SFT（监督微调）阶段**使用，用大模型（Gemini 等）蒸馏，作为冷启动训练集
-- `anneal_pool`（~80 万条）：在各语义簇中心周边展开，数量更多 → **退火微调（Annealing）阶段**使用，用开源模型蒸馏，扩大数据规模
+从聚类结果中采样约 **100 万条**记录（`pool_1000k`），并按域和质量分为六层输出：
 
-**训练策略含义**：SFT 阶段（high_priority）优先使用多样性最高的 200K，使模型快速建立对各语义类型的覆盖；退火阶段（anneal）补充 800K 增量数据，在 SFT 基础上进一步强化各语义类型的细节学习。
+| 输出文件 | 数量 | 质量特征 |
+|---------|------|---------|
+| `stage1_icon_high.jsonl` | 100K | 各 cluster 最贴近质心的记录，多样性最高 |
+| `stage1_icon_medium.jsonl` | 200K | 次优代表性记录 |
+| `stage1_icon_low.jsonl` | 400K | 剩余记录（仍为高质量） |
+| `stage2_illustration_high.jsonl` | 100K | 各 cluster 最贴近质心的记录 |
+| `stage2_illustration_medium.jsonl` | 100K | 次优代表性记录 |
+| `stage2_illustration_low.jsonl` | 100K | 剩余记录 |
+
+六层可按需自由组合，例如：
+- `icon_high + illus_high`（200K）= 等价于旧版 `high_priority_pool`，适合 SFT 冷启动
+- `(icon 高+中) + (illus 高+中)`（500K）= 扩展 SFT 集
+- 全部六层（1000K）= 等价于旧版 `pool_1000k`
+
+**设计动机**：旧版二分（high_priority / anneal）无法按域精确控制比例；分域三层后，不同规模的训练集均可无损拼合，无需重跑流水线。
 
 ### 11.2 Bucket 配额分配（第一层）
 
@@ -645,61 +658,57 @@ pool_records.extend(sorted_recs[:budget])
 
 > **注**：此三层分配机制导致 `pool_1000k` 实际条数可能略小于 100 万，原因是当某 cluster 的 budget 超过其实际 size 时，deficit 不做补偿。全量数据上预计偏差 ~0.5%，属于设计预期内。
 
-### 11.5 high_priority_pool 选取（两阶段 Round-Robin）
+### 11.5 分域三阶段 Round-Robin 分层
 
-从 `pool_1000k` 中选出最具代表性的 20 万条：
-
-**Phase 1（one-per-cluster，约 18K 条）**：
-
-```python
-for cluster_key in cluster_keys:
-    # 从每个 cluster 取 distance_to_centroid 最小的 1 条
-    hp_records.append(cluster_sorted_records[cluster_key][0])
-```
-
-覆盖所有 cluster（stage1_icon 约 12K 个 + stage2_illustration 约 6K 个 = 约 18K 个）。
-
-**Phase 2（Round-Robin 补充至 20 万）**：
+对 `pool_1000k` 中的每个 bucket **独立**执行：
 
 ```
-while len(hp_records) < 200,000:
-    for cluster_key in cluster_keys（轮转）:
-        取该 cluster 下一条未被选中的 distance 最小记录
-        加入 hp_records
+每个 bucket 独立执行：
+  Step 1：按 cluster_id 分组，各 cluster 内按 distance_to_centroid 升序排列
+
+  Step 2：维护一组跨阶段连续的 cluster 指针，Round-Robin 循环遍历：
+    阶段 1（高优）：依次取每个 cluster 的下一条记录，直到取满 tier_sizes[bucket][0] 条
+    阶段 2（中优）：指针从高优末尾继续，再取 tier_sizes[bucket][1] 条
+    阶段 3（低优）：指针后所有剩余记录
 ```
+
+**指针连续性**是关键：高优阶段结束时指针不重置，中优阶段直接从高优末尾继续，保证三层之间无重叠且质量严格单调（高优平均 distance < 中优 < 低优）。
 
 **为什么用 Round-Robin 而不是全局 distance 排序？**
 
-| 方案 | 行为 | 问题 |
-|------|------|------|
-| 全局 distance 排序（旧） | 按绝对距离从小到大补充 | dense cluster（distance 绝对值小）在 Phase 2 中贡献过多记录，稀疏 cluster 贡献极少，语义多样性下降 |
-| **Round-Robin（当前）** | 各 cluster 轮流贡献下一条最近记录 | 各 cluster 贡献条数均衡（约 200K / 18K ≈ 11 条/cluster），不因 distance 绝对值而倾斜 |
+| 方案 | 问题 |
+|------|------|
+| 全局 distance 排序 | dense cluster（distance 绝对值小）在高优层贡献过多记录，稀疏 cluster 贡献极少，语义多样性下降 |
+| **Round-Robin（当前）** | 各 cluster 贡献条数均衡，不因 distance 绝对值而倾斜 |
+
+**每个 bucket 独立 vs 全局混合**
+
+| 方案 | 问题 |
+|------|------|
+| 全局混合 Round-Robin | 无法精确控制每域每层的数量（icon / illustration 的轮转权重不同）|
+| **分域独立（当前）** | 每域独立保证层大小精确，tier_sizes 数字即最终条数 |
+
+**各层深度估算**（stage1_icon，K=12,000 clusters）：
+
+| 层 | 数量 | 平均轮次/cluster |
+|---|---|---|
+| 高优 | 100K | ~8 轮（每 cluster 最贴近质心的前 8 条） |
+| 中优 | 200K | 接下来 ~17 轮 |
+| 低优 | 400K | 剩余记录 |
 
 **cluster 内多条记录是否会重复？**
 
-不会。经过 exact dedup 和 near dedup 后，同一 cluster 内的所有记录都是语义相近但文本不同的独立 instruction。11 条记录覆盖了该语义簇内的多种表达方式，是 SFT 训练所期望的多样性（例如"画一个简单的房屋图标"有多种英文表达，均属同一语义簇但文本各异）。
+不会。经过 exact dedup 和 near dedup 后，同一 cluster 内的所有记录都是语义相近但文本不同的独立 instruction，覆盖该语义簇内的多种表达方式。
 
-**为什么不对 pool_1000k 重新聚类（K=200K）再选质心？**
-
-理论上，对 pool_1000k（1M 条）做 K=200K 的 KMeans，取每个 micro-cluster 的质心最近 1 条，可以得到更精细的 coreset。分析如下：
-
-| 考量 | 重新聚类（K=200K） | Round-Robin（当前） |
-|------|-------------------|-------------------|
-| 多样性 | 略优：每个 micro-cluster 保证 1 条 | 每个 cluster 约 11 条，稍有语义重叠 |
-| 计算代价 | K=200K, N=1M, D=256 → 可接受（NPU 约 10 分钟），但需额外流程 | 无额外计算 |
-| 工程复杂度 | 需新增聚类步骤，管道更长 | 原生支持 |
-| 实际收益 | 每个原始 cluster 仅约 55 条，分成 11 个 sub-cluster 粒度极细，sub-cluster 内部几乎无重复可消除 | 同 pool_1000k 级别的语义覆盖 |
-
-**结论**：对于 SFT 数据需求，每 cluster 11 条已足够，Round-Robin 是最优的工程实用方案。若未来需要极致多样性（如 high_priority_pool 缩小到 50K），可引入 K=50K 重聚类方案。
-
-### 11.6 anneal_pool 构成
+### 11.6 六层合并与 pool_1000k
 
 ```python
-hp_ids = set(r["_meta"]["id"] for r in hp_records)
-anneal = [r for r in pool_records if r["_meta"]["id"] not in hp_ids]
+# pool_1000k = 六层之并集，写入顺序随机打乱（random.shuffle）
+# 六层之间无交集，并集 == pool_1000k
+assert union(all_six_tiers) == set(pool_1000k_ids)
 ```
 
-`pool_1000k = high_priority ∪ anneal`，两者无交集，总量一致。
+`pool_1000k.jsonl` 仍作为全量文件输出，便于下游整体读取或自定义分割。
 
 ---
 
@@ -729,9 +738,13 @@ anneal = [r for r in pool_records if r["_meta"]["id"] not in hp_ids]
                                        stage2_illustration: K=6,000
 ↓ Sample               ~1,000,000      从 2.7M 中采 1M（约 37% 采样率）
 ──────────────────────────────────────────────────────────────────
-pool_1000k             ~1,000,000      总采样池（stage1_icon 700K + illustration 300K）
-high_priority_pool       200,000       SFT 阶段（大模型蒸馏，Round-Robin，cluster 覆盖率 100%）
-anneal_pool            ~800,000        退火阶段（开源模型蒸馏，pool_1000k 去掉 high_priority）
+pool_1000k             ~1,000,000      总采样池（六层合并）
+stage1_icon_high          100,000      icon 高优（各 cluster 最贴近质心）
+stage1_icon_medium        200,000      icon 中优
+stage1_icon_low           400,000      icon 低优（剩余）
+stage2_illustration_high  100,000      illustration 高优
+stage2_illustration_medium 100,000     illustration 中优
+stage2_illustration_low   100,000      illustration 低优（剩余）
 ```
 
 **domain 配比**（最终 pool_1000k）：
@@ -761,8 +774,8 @@ anneal_pool            ~800,000        退火阶段（开源模型蒸馏，pool_
 | `clustering.n_init` | 3 | Cluster | 3次随机初始化取最优，避免局部最优 |
 | `clustering.npu_chunk_size` | 50,000 | Cluster | NPU 模式：chunk=50K 时单批显存 ≤2.4GB（单卡 64GB 可容） |
 | `sampling.total_pool_size` | 1,000,000 | Sample | 蒸馏阶段目标规模 |
-| `sampling.high_priority_pool_size` | 200,000 | Sample | SFT 训练集（大模型蒸馏，Round-Robin 覆盖全部 cluster） |
-| `sampling.anneal_pool_size` | 800,000 | Sample | 退火训练集（开源模型蒸馏） |
+| `sampling.tier_sizes.stage1_icon` | (100K, 200K, 400K) | Sample | icon 三层大小：高优+中优+低优=700K |
+| `sampling.tier_sizes.stage2_illustration` | (100K, 100K, 100K) | Sample | illustration 三层大小：均等三分=300K |
 | `sampling.bucket_quota_overrides.stage2_illustration` | 300,000 | Sample | illustration 提权至 30%（原比例 17%，价值更高） |
 | `num_workers` | 4（默认）/ 128（生产） | 全局 | 对 extract/near_dedup/cluster 阶段并行 |
 
