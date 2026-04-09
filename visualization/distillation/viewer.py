@@ -41,15 +41,18 @@ _RAW_SVG_RE   = re.compile(r"<svg[\s\S]*?</svg>", re.IGNORECASE)
 
 
 def _extract_svg(response: str | None) -> str | None:
-    """从 response 提取 SVG 字符串，剥除 markdown fence 和 <script> 标签。"""
+    """从 response 提取 SVG 字符串，剥除 markdown fence 和 <script> 标签。
+
+    若存在多个 SVG fence block（如模型带思考过程），取最后一个。
+    """
     if not response:
         return None
-    m = _SVG_FENCE_RE.search(response)
-    if m:
-        svg = m.group(1).strip()
+    matches = _SVG_FENCE_RE.findall(response)
+    if matches:
+        svg = matches[-1].strip()
     else:
-        m2 = _RAW_SVG_RE.search(response)
-        svg = m2.group(0) if m2 else None
+        all_raw = _RAW_SVG_RE.findall(response)
+        svg = all_raw[-1] if all_raw else None
     if not svg:
         return None
     svg = _SCRIPT_RE.sub("", svg).strip()
