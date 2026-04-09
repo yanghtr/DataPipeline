@@ -37,7 +37,7 @@ app = Flask(__name__)
 
 _SVG_FENCE_RE = re.compile(r"```svg\s*([\s\S]*?)```", re.IGNORECASE)
 _SCRIPT_RE    = re.compile(r"<script[\s\S]*?</script>", re.IGNORECASE)
-_RAW_SVG_RE   = re.compile(r"<svg[\s\S]*?</svg>", re.IGNORECASE)
+_RAW_SVG_RE   = re.compile(r"<svg[\s\S]*</svg>", re.IGNORECASE)
 
 
 def _extract_svg(response: str | None) -> str | None:
