@@ -3,7 +3,9 @@ Step 核心：并行调用 API 进行 SVG 蒸馏，支持 resume / 流式写出 
 
 输入：  种子 JSONL（含 instruction 字段和 _meta.id）
 输出：  蒸馏结果 JSONL，每行一条成功记录：
-        {"id": ..., "instruction": ..., "response": "<svg>...</svg>",
+        {"id": ..., "instruction": ...,
+         "messages": [{"role": "system", ...}, {"role": "user", ...}],
+         "response": "<svg>...</svg>", "reasoning_content": "...(仅 enable_thinking)",
          "model": ..., "prompt_tokens": ..., "completion_tokens": ..., "finish_reason": ...}
         失败记录不写入 output，由 call_log_path 完整记录（含错误详情）。
         Resume 时 output 中的 ID 均为成功，未出现的 ID 自动重试。
@@ -86,14 +88,20 @@ def run_distill(
         nonlocal ok_count, err_count
         rec_id = _get_id(rec)
         instruction = rec.get("instruction", "")
+        user_content = build_svg_user_content(instruction)
+        # 记录完整的蒸馏输入（system + user messages），精确复现实际请求
+        messages_sent: list[dict] = [
+            {"role": "system", "content": SVG_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
 
-        result: dict = {"id": rec_id, "instruction": instruction}
+        result: dict = {"id": rec_id, "instruction": instruction, "messages": messages_sent}
         try:
             resp_data = call_chat_completion(
                 url=cfg.url,
                 api_key=cfg.api_key,
                 model=cfg.model,
-                user_content=build_svg_user_content(instruction),
+                user_content=user_content,
                 system=SVG_SYSTEM_PROMPT,
                 timeout=cfg.timeout,
                 max_retries=cfg.max_retries,
@@ -102,7 +110,8 @@ def run_distill(
                 result_log_path=call_log_path,
                 extra_params=cfg.generation_params or None,
             )
-            content: str = resp_data["choices"][0]["message"]["content"]
+            message: dict = resp_data["choices"][0]["message"]
+            content: str = message["content"]
             usage: dict = resp_data.get("usage", {})
             result.update(
                 response=content,
@@ -111,6 +120,10 @@ def run_distill(
                 completion_tokens=usage.get("completion_tokens"),
                 finish_reason=resp_data["choices"][0].get("finish_reason"),
             )
+            # 保存推理过程（仅 enable_thinking 时模型才会返回此字段）
+            reasoning = message.get("reasoning_content")
+            if reasoning:
+                result["reasoning_content"] = reasoning
             # 仅成功时写入 output（失败记录由 call_log_path 完整保存）
             with write_lock:
                 with open(output_path, "a", encoding="utf-8") as f:
