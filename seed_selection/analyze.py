@@ -10,9 +10,10 @@ CLI 子命令：python -m seed_selection.main analyze --config ...
   02_bucket_dist.png       六层分级柱状图（每个 bucket 三层叠加）
   03_cluster_size_hist.png 各 bucket cluster 大小分布直方图
   04_instruction_len.png   instruction 长度分布（各域高/中/低优对比）
-  05_distance_hist.png     distance_to_centroid 分布（各域高/中/低优对比）
-  06_source_mix.png        img2svg vs text2svg 比例饼图
-  07_umap.png              [可选] embeddings UMAP 投影（需 umap-learn）
+  05_fps_priority.png      FPS 优先级分布（fps_round/fps_rank，高优应在最左侧）
+  06_distance_hist.png     distance_to_centroid 分布（stage1_icon 辅助参考）
+  07_source_mix.png        img2svg vs text2svg 比例饼图
+  08_umap.png              [可选] embeddings UMAP 投影（需 umap-learn）
 """
 
 from __future__ import annotations
@@ -183,14 +184,17 @@ def compute_metrics(root: Path) -> dict:
                 "coverage_pct": round(100 * len(pool_cids) / total_k, 1) if total_k else 0,
             }
 
-    # 各层 distance 和 instruction 长度统计
+    # 各层 distance、FPS 指标和 instruction 长度统计
     tier_distance: dict[str, dict[str, dict]] = {}
+    tier_fps_metrics: dict[str, dict[str, dict]] = {}
     tier_instr_len: dict[str, dict[str, dict]] = {}
+
     for label, bucket, tier in TIER_DEFS:
         path = _tier_path(root, bucket, tier)
         records = _read_jsonl_records(path)
         if not records:
             continue
+
         distances = [r.get("_meta", {}).get("distance_to_centroid", 0.0) for r in records]
         lengths = [len(r.get("instruction", "")) for r in records]
 
@@ -205,7 +209,28 @@ def compute_metrics(root: Path) -> dict:
             "max":  max(lengths),
         }
 
+        # FPS 指标：stage1_icon 用 fps_round，stage2_illustration 用 fps_rank
+        if bucket == "stage1_icon":
+            fps_vals = [r.get("_meta", {}).get("fps_round") for r in records]
+            fps_vals = [v for v in fps_vals if v is not None]
+            if fps_vals:
+                tier_fps_metrics.setdefault(bucket, {})[tier] = {
+                    "field": "fps_round",
+                    "mean":   round(statistics.mean(fps_vals), 2),
+                    "median": statistics.median(fps_vals),
+                }
+        elif bucket == "stage2_illustration":
+            fps_vals = [r.get("_meta", {}).get("fps_rank") for r in records]
+            fps_vals = [v for v in fps_vals if v is not None and v > 0]
+            if fps_vals:
+                tier_fps_metrics.setdefault(bucket, {})[tier] = {
+                    "field": "fps_rank",
+                    "mean":   round(statistics.mean(fps_vals), 1),
+                    "median": statistics.median(fps_vals),
+                }
+
     metrics["tier_distance"] = tier_distance
+    metrics["tier_fps_metrics"] = tier_fps_metrics
     metrics["tier_instr_len"] = tier_instr_len
 
     # Source mix（从 pool_1000k 统计）
@@ -277,26 +302,42 @@ def generate_report_text(metrics: dict) -> str:
                          f"clusters  ({pct}%) {flag}")
         lines.append("")
 
-    # Distance 层间分离
-    tier_dist = metrics.get("tier_distance", {})
-    if tier_dist:
-        lines.append("=== Distance to Centroid（层间分离，越小越中心）===")
-        for bucket in sorted(tier_dist):
-            lines.append(f"  {bucket}:")
-            tiers = tier_dist[bucket]
-            h_mean  = tiers.get("high",   {}).get("mean", None)
-            m_mean  = tiers.get("medium", {}).get("mean", None)
-            lo_mean = tiers.get("low",    {}).get("mean", None)
+    # FPS 优先级层间单调性（核心多样性指标）
+    tier_fps = metrics.get("tier_fps_metrics", {})
+    if tier_fps:
+        lines.append("=== FPS 优先级（层间单调性，越小=越多样=越高优）===")
+        for bucket in sorted(tier_fps):
+            tiers = tier_fps[bucket]
+            field = next(iter(tiers.values()), {}).get("field", "fps_round")
+            lines.append(f"  {bucket}（{field}）:")
+            h_mean  = tiers.get("high",   {}).get("mean")
+            m_mean  = tiers.get("medium", {}).get("mean")
+            lo_mean = tiers.get("low",    {}).get("mean")
             for tier, label in [("high", "高优"), ("medium", "中优"), ("low", "低优")]:
                 info = tiers.get(tier, {})
                 if info:
-                    lines.append(f"    {label}: 均值 {info['mean']:.6f}  "
-                                 f"中位数 {info['median']:.6f}")
-            # 检查单调性
+                    lines.append(f"    {label}: 均值 {info['mean']:.2f}  "
+                                 f"中位数 {info['median']:.1f}")
             if h_mean is not None and m_mean is not None and lo_mean is not None:
                 monotone = h_mean < m_mean < lo_mean
                 lines.append(f"    层间单调性 (高<中<低): {'✓ 正常' if monotone else '⚠ 异常'}")
         lines.append("")
+
+    # Distance to Centroid（stage1_icon 辅助参考；stage2 恒为 0.0，跳过）
+    tier_dist = metrics.get("tier_distance", {})
+    if tier_dist:
+        icon_dist = {b: v for b, v in tier_dist.items() if b == "stage1_icon"}
+        if icon_dist:
+            lines.append("=== Distance to Centroid（stage1_icon 辅助参考）===")
+            for bucket in sorted(icon_dist):
+                lines.append(f"  {bucket}:")
+                tiers = icon_dist[bucket]
+                for tier, label in [("high", "高优"), ("medium", "中优"), ("low", "低优")]:
+                    info = tiers.get(tier, {})
+                    if info:
+                        lines.append(f"    {label}: 均值 {info['mean']:.6f}  "
+                                     f"中位数 {info['median']:.6f}")
+            lines.append("")
 
     # Instruction 长度
     tier_len = metrics.get("tier_instr_len", {})
@@ -470,12 +511,69 @@ def plot_instruction_len(root: Path, out_dir: Path) -> None:
     logger.info("[analyze] 04_instruction_len.png 已写出")
 
 
+def plot_fps_priority(root: Path, out_dir: Path) -> None:
+    """
+    FPS 优先级分布图（替代 distance_to_centroid 作为多样性核心指标）。
+
+    stage1_icon：各层 fps_round 分布（高优 round=1，中优 round=2-3，低优 round=4-7）
+    stage2_illustration：各层 fps_rank 分布（高优 rank 最小 = 最多样）
+    """
+    plt = _get_mpl()
+
+    # stage1_icon → fps_round；stage2_illustration → fps_rank
+    field_map = {
+        "stage1_icon":         "fps_round",
+        "stage2_illustration": "fps_rank",
+    }
+
+    bucket_tier_vals: dict[str, dict[str, list]] = {}
+    for _label, bucket, tier in TIER_DEFS:
+        field = field_map.get(bucket)
+        if not field:
+            continue
+        path = _tier_path(root, bucket, tier)
+        records = _read_jsonl_records(path)
+        if records:
+            vals = [r.get("_meta", {}).get(field) for r in records]
+            vals = [v for v in vals if v is not None and v > 0]
+            if vals:
+                bucket_tier_vals.setdefault(bucket, {})[tier] = vals
+
+    if not bucket_tier_vals:
+        return
+
+    buckets = sorted(bucket_tier_vals)
+    n = len(buckets)
+    fig, axes = plt.subplots(1, n, figsize=(8 * n, 5), squeeze=False)
+
+    for ax, bucket in zip(axes[0], buckets):
+        field = field_map[bucket]
+        tier_vals = bucket_tier_vals[bucket]
+        for tier in ["high", "medium", "low"]:
+            vals = tier_vals.get(tier, [])
+            if vals:
+                ax.hist(vals, bins=40, alpha=0.55, density=True,
+                        label=TIER_LABELS[tier], color=TIER_COLORS[tier])
+        ax.set_xlabel(field)
+        ax.set_ylabel("Density")
+        ax.set_title(f"{bucket}\nFPS 优先级分布（高优应在最左侧）")
+        ax.legend()
+
+    plt.suptitle("FPS Priority Distribution by Tier (high = earliest FPS = most diverse)", y=1.02)
+    plt.tight_layout()
+    plt.savefig(out_dir / "05_fps_priority.png", dpi=120, bbox_inches="tight")
+    plt.close()
+    logger.info("[analyze] 05_fps_priority.png 已写出")
+
+
 def plot_distance_hist(root: Path, out_dir: Path) -> None:
-    """distance_to_centroid 分布：每个 bucket 一个子图，各层叠加。高优峰值应在最左侧。"""
+    """distance_to_centroid 分布（仅 stage1_icon；stage2 恒为 0.0，跳过）。"""
     plt = _get_mpl()
 
     bucket_tier_dists: dict[str, dict[str, list[float]]] = {}
     for _label, bucket, tier in TIER_DEFS:
+        if bucket != "stage1_icon":  # stage2 distance 恒为 0.0，无意义
+            continue
         path = _tier_path(root, bucket, tier)
         records = _read_jsonl_records(path)
         if records:
@@ -498,14 +596,14 @@ def plot_distance_hist(root: Path, out_dir: Path) -> None:
                         label=TIER_LABELS[tier], color=TIER_COLORS[tier])
         ax.set_xlabel("Distance to centroid")
         ax.set_ylabel("Density")
-        ax.set_title(f"{bucket}\n高优峰值应在最左侧")
+        ax.set_title(f"{bucket}\n辅助参考（高优峰值应在最左侧）")
         ax.legend()
 
-    plt.suptitle("Distance to Centroid by Tier (high peak should be leftmost)", y=1.02)
+    plt.suptitle("Distance to Centroid — stage1_icon only (auxiliary metric)", y=1.02)
     plt.tight_layout()
-    plt.savefig(out_dir / "05_distance_hist.png", dpi=120, bbox_inches="tight")
+    plt.savefig(out_dir / "06_distance_hist.png", dpi=120, bbox_inches="tight")
     plt.close()
-    logger.info("[analyze] 05_distance_hist.png 已写出")
+    logger.info("[analyze] 06_distance_hist.png 已写出")
 
 
 def plot_source_mix(root: Path, out_dir: Path) -> None:
@@ -520,9 +618,9 @@ def plot_source_mix(root: Path, out_dir: Path) -> None:
            colors=["steelblue", "coral"])
     ax.set_title("Source Mix (pool_1000k)")
     plt.tight_layout()
-    plt.savefig(out_dir / "06_source_mix.png", dpi=120)
+    plt.savefig(out_dir / "07_source_mix.png", dpi=120)
     plt.close()
-    logger.info("[analyze] 06_source_mix.png 已写出")
+    logger.info("[analyze] 07_source_mix.png 已写出")
 
 
 def plot_umap(root: Path, out_dir: Path, sample_n: int = 50_000) -> None:
@@ -579,9 +677,9 @@ def plot_umap(root: Path, out_dir: Path, sample_n: int = 50_000) -> None:
     ax.set_xlabel("UMAP-1")
     ax.set_ylabel("UMAP-2")
     plt.tight_layout()
-    plt.savefig(out_dir / "07_umap.png", dpi=120)
+    plt.savefig(out_dir / "08_umap.png", dpi=120)
     plt.close()
-    logger.info("[analyze] 07_umap.png 已写出")
+    logger.info("[analyze] 08_umap.png 已写出")
 
 
 # ── 入口 ──────────────────────────────────────────────────────────────────────
@@ -610,6 +708,7 @@ def run_analyze(output_root: str) -> None:
         plot_bucket_dist(root, out_dir)
         plot_cluster_size_hist(root, out_dir)
         plot_instruction_len(root, out_dir)
+        plot_fps_priority(root, out_dir)
         plot_distance_hist(root, out_dir)
         plot_source_mix(root, out_dir)
         plot_umap(root, out_dir)

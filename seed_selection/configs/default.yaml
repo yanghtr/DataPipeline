@@ -36,18 +36,22 @@ near_dedup:
 
 clustering:
   k_per_bucket:
-    stage1_icon: 12000          # ~2.25M 记录，平均 ~188 条/cluster
-    stage2_illustration: 6000   # ~0.45M 记录，平均 ~75 条/cluster（语义空间更大，细粒度分区）
+    stage1_icon: 100000         # K=100K → avg ~22 条/cluster，类内 FPS 7 轮 → 700K
+    stage2_illustration: 0      # stage2 不做 KMeans，直接全局 FPS
+  fps_n_select_per_bucket:
+    stage2_illustration: 300000 # 全局 FPS 从 0.45M 中选 300K
   random_seed: 42
-  minibatch_size: 50000    # MiniBatchKMeans 每批大小（NPU 模式下为 cdist 分批大小）
-  use_npu: true           # 是否使用 NPU 加速 KMeans（需要 torch_npu）
+  minibatch_size: 50000    # MiniBatchKMeans 每批大小（NPU 模式下不使用）
+  n_init: 1                # K=100K 时 1 次初始化已足够（小 K 可设 3）
+  use_npu: true           # 是否使用 NPU 加速 KMeans 和 FPS（需要 torch_npu）
   use_faiss: false         # 是否使用 faiss-cpu 精确 KMeans（需要 faiss-cpu；use_npu 优先）
   npu_devices:             # 各 bucket worker 按顺序 round-robin 分配的设备
-    - "npu:0"              # 单卡写 1 条；8 卡写 8 条（2 个 bucket 分别用 npu:0 / npu:1，其余空闲）
+    - "npu:0"              # stage1_icon 用 npu:0；stage2_illustration 全局 FPS 用 npu:1
     - "npu:1"
   # 8 卡示例（取消注释替换上方）：
   # npu_devices: ["npu:0","npu:1","npu:2","npu:3","npu:4","npu:5","npu:6","npu:7"]
-  npu_chunk_size: 50000    # NPU 模式下分批 cdist 的批大小（控制显存占用）
+  npu_chunk_size: 40000    # K=100K 时：40K×100K×4B=16GB 峰值（64GB HBM 安全）
+                           # K=12K 时可设 50000（2.4GB 峰值）
 
 sampling:
   total_pool_size: 1000000
@@ -57,9 +61,9 @@ sampling:
   bucket_quota_overrides:
     stage2_illustration: 300000      # 300K（约 30%），剩余 700K 自动分给 stage1_icon
   # 每个 bucket 三优先级层的数量 [高优, 中优, 低优]，三者之和 = 该 bucket 的配额
-  # 高优：各 cluster 最贴近质心的样本，多样性最高
+  # 高优：FPS 最先选出的样本，对全局覆盖贡献最大
   # 中优：次优代表性样本
-  # 低优：剩余样本（仍为高质量，只是相对质心距离更远）
+  # 低优：剩余样本（仍为高质量，只是相对 FPS 选择顺序靠后）
   tier_sizes:
     stage1_icon:         [100000, 200000, 400000]   # 高100K + 中200K + 低400K = 700K
-    stage2_illustration: [100000, 100000, 100000]   # 高100K + 中100K + 低100K = 300K
+    stage2_illustration: [50000, 100000, 150000]    # 高50K + 中100K + 低150K = 300K

@@ -32,11 +32,15 @@ class NearDedupConfig:
 @dataclass
 class ClusterConfig:
     k_per_bucket: dict[str, int] = field(default_factory=lambda: {
-        "stage1_icon": 12_000,
-        "stage2_illustration": 6_000,
+        "stage1_icon": 100_000,    # K=100K → avg 22 pts/cluster，类内 FPS 7 轮 = 700K
+        "stage2_illustration": 0,  # stage2 不做 KMeans，直接全局 FPS
+    })
+    fps_n_select_per_bucket: dict[str, int] = field(default_factory=lambda: {
+        "stage2_illustration": 300_000,  # 全局 FPS 选 300K
     })
     random_seed: int = 42
     minibatch_size: int = 50_000
+    n_init: int = 1               # K=100K 时推荐 1（单次初始化已足够）
     # KMeans 后端选择（三档，优先级：use_npu > use_faiss > MiniBatchKMeans）
     # use_npu:   torch_npu Lloyd's（精确，NPU/GPU 加速，需 torch_npu）
     # use_faiss: faiss-cpu Lloyd's（精确，CPU BLAS 加速，需 faiss-cpu）
@@ -46,7 +50,7 @@ class ClusterConfig:
     # 每个 bucket worker 按顺序从列表中取设备（round-robin）
     # 单卡：["npu:0"]；双卡：["npu:0", "npu:1"]；8卡：["npu:0",...,"npu:7"]
     npu_devices: list[str] = field(default_factory=lambda: ["npu:0"])
-    npu_chunk_size: int = 50_000   # 分批 cdist / scatter_add 的批大小（控制显存峰值）
+    npu_chunk_size: int = 40_000   # K=100K 时: 40K×100K×4B=16GB 峰值（安全）
 
 
 @dataclass
@@ -59,7 +63,7 @@ class SamplingConfig:
     # 每个 bucket 三优先级层的数量 (高优, 中优, 低优)，三者之和应等于该 bucket 在 pool_1000k 中的配额
     tier_sizes: dict[str, tuple[int, int, int]] = field(default_factory=lambda: {
         "stage1_icon":         (100_000, 200_000, 400_000),
-        "stage2_illustration": (100_000, 100_000, 100_000),
+        "stage2_illustration": (50_000, 100_000, 150_000),
     })
 
 
@@ -106,15 +110,19 @@ def load_config(path: Path) -> PipelineConfig:
         ),
         clustering=ClusterConfig(
             k_per_bucket=cl.get("k_per_bucket", {
-                "stage1_icon": 12_000,
-                "stage2_illustration": 6_000,
+                "stage1_icon": 100_000,
+                "stage2_illustration": 0,
+            }),
+            fps_n_select_per_bucket=cl.get("fps_n_select_per_bucket", {
+                "stage2_illustration": 300_000,
             }),
             random_seed=cl.get("random_seed", 42),
             minibatch_size=cl.get("minibatch_size", 50_000),
+            n_init=cl.get("n_init", 1),
             use_npu=cl.get("use_npu", False),
             use_faiss=cl.get("use_faiss", False),
             npu_devices=cl.get("npu_devices", ["npu:0"]),
-            npu_chunk_size=cl.get("npu_chunk_size", 50_000),
+            npu_chunk_size=cl.get("npu_chunk_size", 40_000),
         ),
         sampling=SamplingConfig(
             total_pool_size=sa.get("total_pool_size", 1_000_000),
@@ -124,7 +132,7 @@ def load_config(path: Path) -> PipelineConfig:
                 k: tuple(v)
                 for k, v in sa.get("tier_sizes", {
                     "stage1_icon":         [100_000, 200_000, 400_000],
-                    "stage2_illustration": [100_000, 100_000, 100_000],
+                    "stage2_illustration": [50_000, 100_000, 150_000],
                 }).items()
             },
         ),

@@ -112,17 +112,17 @@ SVG 字符数作为 **复杂度代理指标**，是后续过滤阶段的关键�
   ⑥ Embed            Qwen3-Embedding-4B，256 维 L2 归一化向量
         │
         ▼
-  ⑦ Cluster          KMeans（两桶）
-        │             stage1_icon: K=12,000
-        │             stage2_illustration: K=6,000
+  ⑦ Cluster          KMeans + FPS（两桶，策略不同）
+        │             stage1_icon: KMeans(K=100K) + 类内 FPS → fps_round
+        │             stage2_illustration: 直接全局 FPS(n=300K) → fps_rank
         ▼
-  ⑧ Sample           三层配额 + 分域六层输出
+  ⑧ Sample           FPS 顺序优先级 + 分域六层输出
         │
   ┌─────┼───────────────────────────────────────────┐
   ▼     ▼                                           ▼
 pool_1000k          stage1_icon             stage2_illustration
 （~100万）       高优/中优/低优               高优/中优/低优
-              (100K / 200K / 400K)         (100K / 100K / 100K)
+              (100K / 200K / 400K)         (50K / 100K / 150K)
 ```
 
 **中间记录 schema** — 各阶段逐步追加字段，顶层只有 `instruction`，所有流水线元数据统一存入 `_meta`：
@@ -137,9 +137,11 @@ pool_1000k          stage1_icon             stage2_illustration
     "svg_len":             271,
     "gt_svg":              "```svg\n<svg viewBox=\"0 0 24 24\">...</svg>\n```",
     "bucket_key":          "stage1_icon",      ← cluster 阶段写入
-    "cluster_id":          17,                  ← cluster 阶段写入
-    "cluster_size":        284,                 ← cluster 阶段写入
-    "distance_to_centroid": 0.043              ← cluster 阶段写入
+    "cluster_id":          17,                  ← cluster 阶段写入（stage2 固定为 0）
+    "cluster_size":        22,                  ← cluster 阶段写入（stage2 为总记录数）
+    "distance_to_centroid": 0.043,             ← cluster 阶段写入（stage2 为 0.0）
+    "fps_round":           3                   ← stage1_icon 类内 FPS 轮次（1-based）
+    // 或 "fps_rank": 12345                    ← stage2_illustration 全局 FPS 顺序（0=未选中）
   }
 }
 ```
@@ -463,128 +465,136 @@ embs = embs / clip(norms, 1e-8, ∞)  # 重归一化，防止零向量除法错�
 
 ---
 
-## 10. Step 7：聚类（Cluster）
+## 10. Step 7：聚类与多样性排序（Cluster + FPS）
 
-### 10.1 功能
+### 10.1 功能与设计动机
 
-对每个 domain 的向量空间独立做 K-Means 聚类，将每条指令归入某个语义簇，并记录到质心距离，作为采样阶段的质量代理指标。
+**问题**：旧版算法在 pool 构建时对每个 cluster 取"距质心最近的 N 条"，high tier 100K 与 medium tier 前 100K 实际上都是每个 cluster 最中心的记录，导致层间 prompt 高度相似，丧失多样性。
 
-### 10.2 算法选择
+**根本原因**：最小化 `distance_to_centroid` 的目标是"找最典型代表"，而非"覆盖最广分布"。采样目标应是 **K-center 最优化**（最小化最大覆盖距离），而 Greedy Farthest Point Sampling（FPS）是 K-center 问题的 2-近似算法。
+
+**新设计**：两个 bucket 使用不同策略：
+- `stage1_icon`（2.25M 条）：KMeans(K=100K) 划分语义区域 + 类内 FPS 排序（`fps_round`）
+- `stage2_illustration`（0.45M 条）：直接全局 FPS（`fps_rank`），无需 KMeans
+
+### 10.2 Greedy FPS 算法原理
+
+**K-center 问题**：从 N 个点中选 K 个，使所有点到最近已选点的最大距离最小化。
+
+**Greedy FPS**（2-近似）：
+```
+初始化：anchor = argmin(||x - μ||²)（距全局质心最近的点）
+min_dist[i] = ||x_i - anchor||²   （各点到 anchor 的距离）
+
+循环 K-1 步：
+  nxt = argmax(min_dist)           ← 距当前选择集最远的点
+  min_dist = min(min_dist, ||x - x_nxt||²)  ← 更新最近距离
+  选择 x_nxt
+
+最终：选出的 K 个点均匀覆盖整个分布，层间多样性单调
+```
+
+**为什么 FPS 比 distance_to_centroid 更好？**
+
+| 方案 | 多样性保证 |
+|------|----------|
+| 距质心最近 K 条 | 选出的点密集在质心附近（同质化） |
+| **FPS（当前）** | 选出的点彼此尽可能远离（最大覆盖） |
+
+### 10.3 stage1_icon：KMeans(K=100K) + 类内 FPS
+
+#### 为什么不直接对全部 2.25M 做全局 FPS？
+
+直接全局 FPS 需要 700K 步，每步一次 GEMV（读取全部 2.25M×256×4B = 2.25GB 数据），在 NPU 上约 18 分钟（内存带宽瓶颈，GEMV 无法利用矩阵乘的 Tensor Core 加速）。
+
+**层级近似方案**：
+1. KMeans(K=100K) 将空间划分为 100K 个区域（≈ 1 分钟）
+2. 各 cluster 内独立 FPS（平均 n_c=22，O(Σ n_c²) ≈ 50M ops ≈ 10-30 秒 CPU）
+3. 近似全局 FPS：每个区域内最多样性的顺序，合计约等于全局 FPS 的层级近似
+
+#### K=100K 的数学对齐
+
+```
+N = 2.25M，K = 100K → avg n_c = 22.5 条/cluster
+FPS 最多轮数 = 22，700K 总 budget / 100K clusters = 7 条/cluster
+7 条 = round 1 + round 2-3 + round 4-7 = 1 + 2 + 4 = 7 (完美对应三层 1:2:4)
+```
+
+| 层 | FPS 轮次 | 理论数量 |
+|----|---------|---------|
+| 高优 | round 1 | 100K（每 cluster 第 1 条，最多样） |
+| 中优 | round 2–3 | 200K（每 cluster 第 2–3 条） |
+| 低优 | round 4–7 | 400K（每 cluster 第 4–7 条） |
+
+#### 类内 FPS 算法
+
+```python
+# 对每个 cluster 独立执行：
+anchor = argmin(||emb - centroid||²)  # 距质心最近 = FPS 起点（第1条）
+min_dist = ||emb - emb[anchor]||²     # 初始化各点到 anchor 的距离
+
+fps_round[anchor] = 1
+for step in range(1, n_c):
+    nxt = argmax(min_dist)            # 距当前选择集最远
+    fps_round[nxt] = step + 1
+    min_dist = min(min_dist, ||emb - emb[nxt]||²)
+```
+
+numpy 向量化实现：`np.einsum("ij,ij->i", diff, diff)` 代替显式循环，`O(Σ n_c²)` 总复杂度，K=100K、avg n_c=22 时约 10–30 秒。
+
+### 10.4 stage2_illustration：直接全局 FPS（NPU 加速）
+
+#### 为什么 stage2 可以直接全局 FPS？
+
+`stage2_illustration` 仅 0.45M 条，选 300K 步。NPU 上每步一次 GEMV（读 0.45M×256×4B ≈ 440MB），约 0.5ms/步，300K 步 ≈ **2.5 分钟**，可接受。
+
+#### NPU FPS 实现
+
+```python
+# 预计算各点 L2 范数（常驻 NPU）
+norms = (X * X).sum(dim=1)           # (N,) 只算一次
+
+# 每步只需一次 GEMV（无 expand，无 (N,K,D) 展开）
+# 利用：||x - c||² = ||x||² - 2·x·c + ||c||²
+new_d = norms - 2.0 * (X @ center) + (center * center).sum()
+min_dist = minimum(min_dist, new_d)
+nxt = argmax(min_dist)
+```
+
+显存估算（N=450K, D=256, FP32）：X + norms + min_dist ≈ 440MB + 1.8MB + 1.8MB = **< 500MB**（安全）。
+
+### 10.5 KMeans 后端（stage1_icon 使用）
 
 支持三档后端，通过配置切换，优先级：`use_npu` > `use_faiss` > 默认 MiniBatchKMeans。
 
-#### 三档后端对比
+| 后端 | 算法类型 | 速度（相对） | 依赖 |
+|------|---------|------------|------|
+| sklearn MiniBatchKMeans | 近似 K-Means | 1× | 已含 |
+| faiss-cpu | 精确 Lloyd's | ~5–15× | `pip install faiss-cpu` |
+| kmeans_npu | 精确 Lloyd's | ~30–100× | `torch` + `torch_npu` |
 
-| 后端 | 算法类型 | 速度（相对） | 精确性 | 内存/显存需求 | 依赖 | 适用场景 |
-|------|---------|------------|--------|------------|------|---------|
-| **sklearn MiniBatchKMeans** | Mini-batch 近似 K-Means | 基准（1×） | 近似（inertia 偏高 1–5%） | CPU RAM，无特殊要求 | sklearn（必然已安装） | CPU 开发/调试环境 |
-| **faiss-cpu**（`kmeans_faiss.py`） | 标准 Lloyd's 精确 K-Means | **~5–15×**（CPU BLAS 优化） | 精确 | CPU RAM，BLAS 多线程 | `pip install faiss-cpu` | CPU 环境追求精度和速度 |
-| **kmeans_npu**（`kmeans_npu.py`） | 标准 Lloyd's 精确 K-Means | **~30–100×**（Ascend 910B） | 精确 | NPU/GPU 显存（64GB/卡） | `torch` + `torch_npu` | NPU/GPU 生产环境 |
+**NPU K=100K 显存估算**（D=256, FP32，chunk=40K）：
 
-> **为什么 faiss-cpu 比 MiniBatchKMeans 快 5–15×？**
-> MiniBatchKMeans 每轮只用 batch_size（50K）条更新质心，需要多轮才收敛，且是近似算法。
-> faiss 底层用 BLAS/LAPACK 优化的全批次精确 Lloyd's，向量化程度高，单轮全量计算比 mini-batch 迭代快得多。
->
-> **faiss-gpu 是否可用？**
-> faiss-gpu 仅支持 CUDA，不支持 Ascend NPU。生产环境只安装 `faiss-cpu`。
+| Domain | N | K | GEMM 每批 | scatter_add | X 常驻 | 峰值 |
+|--------|---|---|----------|-------------|--------|------|
+| `stage1_icon` | 2.25M | **100K** | **16 GB** | 80 MB | 2.25 GB | **~18 GB** |
 
-#### MiniBatchKMeans（默认，无需额外依赖）
+`npu_chunk_size=40,000`（旧值 50K→新值 40K）将单批峰值从 19.2GB 降至 16GB，在 64GB HBM 上安全运行。`n_init=1`（K=100K 时单次初始化已足够，3次需额外 ~2.5h）。
 
-```python
-MiniBatchKMeans(
-    n_clusters=K,
-    batch_size=50000,   # 每批处理条数
-    random_state=42,
-    n_init=3,           # 3 次随机初始化取最优
-    max_iter=100,
-)
-```
+### 10.6 输出字段
 
-#### faiss-cpu Lloyd's（精确，CPU 加速）
+| 字段 | 适用 domain | 含义 |
+|------|------------|------|
+| `cluster_id` | stage1_icon | 所属 cluster 编号（0 起始）；stage2 固定为 0 |
+| `cluster_size` | stage1_icon | 该 cluster 的成员总数；stage2 为总记录数 |
+| `distance_to_centroid` | stage1_icon | embedding 与质心的 L2 距离；stage2 为 0.0 |
+| `fps_round` | **stage1_icon** | 类内 FPS 选择轮次（1-based）；round 1=最多样 |
+| `fps_rank` | **stage2_illustration** | 全局 FPS 选择顺序（1-based）；0=未被选中 |
+| `bucket_key` | 全部 | 所属 domain（供采样阶段索引） |
 
-```python
-faiss.Kmeans(
-    d,              # 向量维度
-    k,              # 聚类数
-    niter=100,      # 最大迭代轮数（对应 max_iter）
-    nredo=3,        # 随机重启次数（对应 n_init），取 inertia 最小
-    seed=42,
-    verbose=False,
-    spherical=False,
-)
-km.train(X)         # X: float32 C-contiguous numpy 数组
-_, labels = km.index.search(X, 1)   # 获取每个点最近质心
-```
+### 10.7 各 domain 独立处理的原因
 
-#### NPU Lloyd's 算法（`kmeans_npu.py`，精确，NPU/GPU 加速）
-
-```
-初始化（Forgy 随机初始化）：从 X 中随机采 K 个不重复点作为初始质心
-  ← 不使用 KMeans++，原因：KMeans++ 需循环 K 次，每次全量 cdist，
-    K=12,000 时共 540,000 次 cdist，显存碎片严重触发 OOM
-  ← 大 K（≥1000）下 n_init=3 多次随机重启质量等同于 KMeans++
-
-Lloyd's 迭代（最多 100 轮）：
-  1. 分配（chunked cdist）：
-     for i in range(0, N, chunk_size=50,000):
-         dists = torch.cdist(X[i:i+chunk], C)   # (chunk, K) NPU 矩阵乘加速
-         labels[i:i+chunk] = dists.argmin(dim=1)
-     峰值显存：chunk × K × 4B = 50K × 12K × 4B = 2.4GB
-
-  2. 更新（chunked scatter_add，关键 OOM 修复）：
-     new_C = zeros(K, D); counts = zeros(K)
-     for start in range(0, N, chunk_size):
-         l_chunk = labels[start:end]                         # (chunk,)
-         idx = l_chunk.unsqueeze(1).expand(-1, D).contiguous()  # (chunk, D) ← 仅 chunk 级
-         new_C.scatter_add_(0, idx, X[start:end])
-         counts.scatter_add_(0, l_chunk, ones(chunk))
-     峰值：chunk × D × 8B = 50K × 256 × 8B = 100MB
-     ← 修复前：expand(-1, D) 为全量 N×D，torch_npu 强制 materialize
-       N × D × 8B = 2.25M × 256 × 8B = 4.5GB int64 → OOM
-
-  3. 空 cluster 处理：随机从 X 采样一个点替换（防止质心退化）
-  4. 收敛判断：mean(||new_C - C||₂) < tol（默认 1e-4）
-
-重复 n_init=3 次，保留 inertia 最小的结果
-```
-
-**显存估算**（D=256, FP32，chunk=50K）：
-
-| Domain | N | K | cdist 每批 | scatter_add 每批 | X 常驻 | 峰值合计 |
-|--------|---|---|-----------|----------------|--------|---------|
-| `stage1_icon` | 2.25M | 12,000 | 2.4 GB | 100 MB | 2.25 GB | **~4.7 GB** |
-| `stage2_illustration` | 0.45M | 6,000 | 0.5 GB | 100 MB | 0.45 GB | **~1.1 GB** |
-
-两个 bucket 若并行运行（各占一张卡），64GB/卡完全可容。
-
-### 10.3 K 值选择
-
-| Domain | K | 记录数（过滤后） | 平均 cluster 大小 | 选择理由 |
-|--------|---|----------------|-----------------|---------|
-| `stage1_icon` | **12,000** | ~2,250,000 | ~188 | 数据量大，需足够 K 覆盖多样图标风格 |
-| `stage2_illustration` | **6,000** | ~450,000 | ~75 | 语义空间远大于 icon（构图×风格×主题），需更细粒度分区 |
-
-**K 值选择原则**：
-- K 远小于 N（N/K ≈ 75–188），每个 cluster 有足够数量的成员，使后续 cluster-level 采样有意义
-- K 足够大（> 1000），确保语义空间被充分划分，不同主题/风格的指令落在不同 cluster 中
-- illustration K 与 icon K 之比（6K:12K = 1:2）远高于其数据量之比（1:5），这是因为 illustration 的语义空间相对于数据量更大
-
-### 10.4 输出字段
-
-聚类完成后，每条记录追加以下 `_meta` 字段：
-
-| 字段 | 含义 |
-|------|------|
-| `cluster_id` | 所属 cluster 编号（0 起始） |
-| `cluster_size` | 该 cluster 的成员总数 |
-| `distance_to_centroid` | 该记录的 embedding 与 cluster 质心的 L2 距离 |
-| `bucket_key` | 所属 domain（与 domain 值相同，供采样索引） |
-
-`distance_to_centroid` 是后续采样中"选最具代表性样本"的核心依据：距离越小，该指令越接近该语义簇的中心，代表性越强。
-
-### 10.5 各 domain 独立聚类的原因
-
-两个 domain 的指令在语义空间上分布差异极大（icon 指令短、抽象；illustration 指令长、描述性强），混合聚类会导致跨 domain 的大型异质 cluster，失去语义连贯性。各 domain 独立聚类保证每个 cluster 内的指令在语义上同质。
+icon（短文本，抽象）与 illustration（长文本，描述性）在语义空间上分布差异极大，混合处理会导致跨 domain 语义混淆。各 domain 独立处理保证 FPS 在同质空间内执行，多样性度量有意义。
 
 ---
 
@@ -592,123 +602,112 @@ Lloyd's 迭代（最多 100 轮）：
 
 ### 11.1 功能
 
-从聚类结果中采样约 **100 万条**记录（`pool_1000k`），并按域和质量分为六层输出：
+从 FPS 排序结果中采样约 **100 万条**记录（`pool_1000k`），并按域和质量分为六层输出：
 
 | 输出文件 | 数量 | 质量特征 |
 |---------|------|---------|
-| `stage1_icon_high.jsonl` | 100K | 各 cluster 最贴近质心的记录，多样性最高 |
-| `stage1_icon_medium.jsonl` | 200K | 次优代表性记录 |
-| `stage1_icon_low.jsonl` | 400K | 剩余记录（仍为高质量） |
-| `stage2_illustration_high.jsonl` | 100K | 各 cluster 最贴近质心的记录 |
-| `stage2_illustration_medium.jsonl` | 100K | 次优代表性记录 |
-| `stage2_illustration_low.jsonl` | 100K | 剩余记录 |
+| `stage1_icon_high.jsonl` | 100K | FPS round 1，各 cluster 覆盖最广的第一条，多样性最高 |
+| `stage1_icon_medium.jsonl` | 200K | FPS round 2–3，次优代表性记录 |
+| `stage1_icon_low.jsonl` | 400K | FPS round 4–7，剩余高质量记录 |
+| `stage2_illustration_high.jsonl` | **50K** | 全局 FPS rank 1–50K，分布最广 |
+| `stage2_illustration_medium.jsonl` | **100K** | 全局 FPS rank 50K–150K |
+| `stage2_illustration_low.jsonl` | **150K** | 全局 FPS rank 150K–300K |
 
 六层可按需自由组合，例如：
-- `icon_high + illus_high`（200K）= 等价于旧版 `high_priority_pool`，适合 SFT 冷启动
-- `(icon 高+中) + (illus 高+中)`（500K）= 扩展 SFT 集
-- 全部六层（1000K）= 等价于旧版 `pool_1000k`
+- `icon_high + illus_high`（150K）= 最高多样性集合，适合 SFT 冷启动
+- `(icon 高+中) + (illus 高+中)`（450K）= 扩展 SFT 集
+- 全部六层（1000K）= 全量池
 
-**设计动机**：旧版二分（high_priority / anneal）无法按域精确控制比例；分域三层后，不同规模的训练集均可无损拼合，无需重跑流水线。
+**设计动机**：以 FPS 选择顺序替代 distance_to_centroid 作为优先级依据——FPS 顺序越靠前，对全局分布的覆盖贡献越大，高层样本真正多样。
 
-### 11.2 Bucket 配额分配（第一层）
-
-**默认：按数据量比例**
+### 11.2 Bucket 配额分配
 
 ```
-stage1_icon quota    ≈ 700,000  （~83% × 1M，覆盖大量图标样本）
-stage2_illustration  ≈ 300,000  （显式提权，见下）
+stage1_icon quota    = 700,000  （bucket_quota_overrides 后，剩余自动分配）
+stage2_illustration  = 300,000  （显式提权：原始比例 17%，提升至 30%）
 ```
 
-**illustration 手动提权**
+`bucket_quota_overrides: {stage2_illustration: 300000}`：illustration 指令更长（~408 字符 vs ~79 字符）、SVG 更复杂（3K–30K 字符），每条训练价值更高，手动提权补偿数量劣势。
 
-illustration 原始数据量占比约 17%，但具有更高的训练价值：
-- 指令更长、语义更丰富（中位数 408 字符 vs icon 的 79 字符）
-- SVG 更复杂（3K–30K 字符），是更难的生成任务
-- 每条样本消耗更多 teacher model tokens，稀缺性更高
+### 11.3 stage1_icon Pool 构建：容量感知约束 Cluster 预算
 
-配置 `bucket_quota_overrides: {stage2_illustration: 300000}` 将 illustration 提升到 30%，其余 700K 自动分配给 stage1_icon。
-
-### 11.3 Cluster 预算分配（第二层）
-
-**按 √(cluster_size) 分配 budget，每个 cluster 至少 1**
+**算法**：按 √(cluster_size) 分配 budget，迭代截断超容量部分并再分配：
 
 ```python
-raw_budget[c] = bucket_quota × √cluster_size[c] / Σ√cluster_size
-budget[c] = max(1, floor(raw_budget[c]))
+# 初始分配
+budget[c] = max(1, total_budget × √size[c] / Σ√size)
+
+# 迭代修正（最多 20 轮）
+for _ in range(20):
+    excess = Σ max(0, budget[c] - size[c])   # 超出容量的 budget
+    if excess == 0: break
+    budget[c] = min(budget[c], size[c])       # 截断
+    # 按 √(remaining_capacity) 分配 excess 给还有容量的 cluster
+    remaining_capacity = {c: size[c] - budget[c] for c if budget[c] < size[c]}
+    for c in remaining_capacity:
+        budget[c] += excess × √remaining_capacity[c] / Σ√remaining_capacity
+
+# 最终微调：确保 Σbudget == quota（取整误差修正）
 ```
 
-sqrt 权重的含义：
+**pool 采样**：每个 cluster 按 `fps_round` 升序取前 `budget` 条（FPS 最早选出的最多样）。
 
-| 方案 | 大 cluster 获得 | 小 cluster 获得 |
-|------|---------------|---------------|
-| 均匀分配（size⁰） | 与小 cluster 相同 | 过多（相对占比大） |
-| 正比分配（size¹） | 过多 | 极少（极端不均） |
-| **sqrt 分配（size^0.5）** | **适中，但相对占比低** | **相对更多，增强多样性** |
-
-sqrt 权重在"完全均匀"与"完全正比"之间取得平衡：大 cluster 多采，但不会压制小 cluster（每个 cluster 保证至少 1 条）。
-
-### 11.4 Cluster 内选取（第三层）
+### 11.4 stage2_illustration Pool 构建：fps_rank 直接截取
 
 ```python
-sorted_recs = sorted(recs, key=lambda r: distance_to_centroid)
-pool_records.extend(sorted_recs[:budget])
+selected = [r for r in records if r["_meta"]["fps_rank"] > 0]
+selected.sort(key=lambda r: r["_meta"]["fps_rank"])
+pool_records.extend(selected[:300_000])
 ```
 
-优先选最靠近质心的记录（最具代表性），避免选取 cluster 边界的噪声点。
+FPS 已在 cluster 阶段对全局 300K 排好优先级顺序，pool 构建直接截取。
 
-> **注**：此三层分配机制导致 `pool_1000k` 实际条数可能略小于 100 万，原因是当某 cluster 的 budget 超过其实际 size 时，deficit 不做补偿。全量数据上预计偏差 ~0.5%，属于设计预期内。
+### 11.5 分层策略
 
-### 11.5 分域三阶段 Round-Robin 分层
-
-对 `pool_1000k` 中的每个 bucket **独立**执行：
+**stage1_icon：Round-Robin + fps_round 排序**
 
 ```
 每个 bucket 独立执行：
-  Step 1：按 cluster_id 分组，各 cluster 内按 distance_to_centroid 升序排列
+  Step 1：按 cluster_id 分组，各 cluster 内按 fps_round 升序排列
 
-  Step 2：维护一组跨阶段连续的 cluster 指针，Round-Robin 循环遍历：
-    阶段 1（高优）：依次取每个 cluster 的下一条记录，直到取满 tier_sizes[bucket][0] 条
-    阶段 2（中优）：指针从高优末尾继续，再取 tier_sizes[bucket][1] 条
-    阶段 3（低优）：指针后所有剩余记录
+  Step 2：Round-Robin 循环遍历所有 cluster，跨阶段指针连续：
+    阶段 1（高优）：各 cluster 轮流贡献下一条，直到 100K 条（fps_round 最小）
+    阶段 2（中优）：从高优末尾继续，再取 200K 条（fps_round 次小）
+    阶段 3（低优）：指针后所有剩余记录（400K）
 ```
 
-**指针连续性**是关键：高优阶段结束时指针不重置，中优阶段直接从高优末尾继续，保证三层之间无重叠且质量严格单调（高优平均 distance < 中优 < 低优）。
+Round-Robin 保证各 cluster 贡献条数均衡（不因 fps_round 绝对值而倾斜）；fps_round 排序保证高优包含每个 cluster 覆盖最广的起始点。
 
-**为什么用 Round-Robin 而不是全局 distance 排序？**
+**stage2_illustration：直接按 fps_rank 切分**
 
-| 方案 | 问题 |
-|------|------|
-| 全局 distance 排序 | dense cluster（distance 绝对值小）在高优层贡献过多记录，稀疏 cluster 贡献极少，语义多样性下降 |
-| **Round-Robin（当前）** | 各 cluster 贡献条数均衡，不因 distance 绝对值而倾斜 |
+```python
+sorted_recs = sorted(pool_recs, key=lambda r: r["_meta"]["fps_rank"])
+high   = sorted_recs[:50_000]           # rank 1–50K
+medium = sorted_recs[50_000:150_000]    # rank 50K–150K
+low    = sorted_recs[150_000:]          # rank 150K–300K
+```
 
-**每个 bucket 独立 vs 全局混合**
+全局 FPS 顺序即全局多样性顺序，直接切分无需 Round-Robin。
 
-| 方案 | 问题 |
-|------|------|
-| 全局混合 Round-Robin | 无法精确控制每域每层的数量（icon / illustration 的轮转权重不同）|
-| **分域独立（当前）** | 每域独立保证层大小精确，tier_sizes 数字即最终条数 |
+**各层深度对比**（stage1_icon，K=100K，avg n_c=7）：
 
-**各层深度估算**（stage1_icon，K=12,000 clusters）：
-
-| 层 | 数量 | 平均轮次/cluster |
-|---|---|---|
-| 高优 | 100K | ~8 轮（每 cluster 最贴近质心的前 8 条） |
-| 中优 | 200K | 接下来 ~17 轮 |
-| 低优 | 400K | 剩余记录 |
-
-**cluster 内多条记录是否会重复？**
-
-不会。经过 exact dedup 和 near dedup 后，同一 cluster 内的所有记录都是语义相近但文本不同的独立 instruction，覆盖该语义簇内的多种表达方式。
+| 层 | fps_round 范围 | 数量 |
+|----|--------------|------|
+| 高优 | round 1 | ~100K（每 cluster 最多样的 1 条） |
+| 中优 | round 2–3 | ~200K（每 cluster 第 2–3 多样） |
+| 低优 | round 4–7 | ~400K（每 cluster 第 4–7 多样） |
 
 ### 11.6 六层合并与 pool_1000k
 
 ```python
-# pool_1000k = 六层之并集，写入顺序随机打乱（random.shuffle）
-# 六层之间无交集，并集 == pool_1000k
+# pool_1000k = 六层之并集，写入顺序随机打乱
 assert union(all_six_tiers) == set(pool_1000k_ids)
 ```
 
 `pool_1000k.jsonl` 仍作为全量文件输出，便于下游整体读取或自定义分割。
+
+**cluster 内多条记录是否会重复？**
+不会。经过 exact dedup 和 near dedup 后，同一 cluster 内的所有记录都是语义相近但文本不同的独立 instruction，覆盖该语义簇内的多种表达方式。
 
 ---
 
@@ -733,18 +732,18 @@ assert union(all_six_tiers) == set(pool_1000k_ids)
 ↓ SVG Filter           ~2,700,000      移除 icon 域底部 10% 极简 SVG（~160K 条）
                                        illustration 全部保留
 ↓ Embed                ~2,700,000      无损（仅向量化，不过滤）
-↓ Cluster              ~2,700,000      无损（仅附加 cluster 信息）
-                                       stage1_icon: K=12,000
-                                       stage2_illustration: K=6,000
+↓ Cluster              ~2,700,000      无损（附加 cluster/FPS 信息）
+                                       stage1_icon: KMeans(K=100K) + 类内 FPS → fps_round
+                                       stage2_illustration: 全局 FPS(300K) → fps_rank
 ↓ Sample               ~1,000,000      从 2.7M 中采 1M（约 37% 采样率）
 ──────────────────────────────────────────────────────────────────
 pool_1000k             ~1,000,000      总采样池（六层合并）
-stage1_icon_high          100,000      icon 高优（各 cluster 最贴近质心）
-stage1_icon_medium        200,000      icon 中优
-stage1_icon_low           400,000      icon 低优（剩余）
-stage2_illustration_high  100,000      illustration 高优
-stage2_illustration_medium 100,000     illustration 中优
-stage2_illustration_low   100,000      illustration 低优（剩余）
+stage1_icon_high          100,000      icon 高优（FPS round 1，各 cluster 最多样）
+stage1_icon_medium        200,000      icon 中优（FPS round 2–3）
+stage1_icon_low           400,000      icon 低优（FPS round 4–7）
+stage2_illustration_high   50,000      illustration 高优（全局 FPS rank 1–50K）
+stage2_illustration_medium 100,000     illustration 中优（rank 50K–150K）
+stage2_illustration_low   150,000      illustration 低优（rank 150K–300K）
 ```
 
 **domain 配比**（最终 pool_1000k）：
@@ -768,15 +767,16 @@ stage2_illustration_low   100,000      illustration 低优（剩余）
 | `embedding.dimension` | 256 | Embed | Matryoshka 截断维度，语义信息/计算开销平衡点（4B/0.6B 均适用） |
 | `embedding.model` | Qwen3-Embedding-4B（生产）/ 0.6B（验证） | Embed | 支持 Matryoshka，只需换 model_path，其余配置不变 |
 | `embedding.shard_size` | 100,000 | Embed | 单 shard 内存 100k×256×4B = 100MB，可控 |
-| `clustering.k_per_bucket.stage1_icon` | 12,000 | Cluster | N≈2.25M，K/N=0.53%，平均 188条/cluster |
-| `clustering.k_per_bucket.stage2_illustration` | 6,000 | Cluster | N≈0.45M，语义丰富，K/N=1.33%，平均 75条/cluster |
-| `clustering.minibatch_size` | 50,000 | Cluster | MiniBatchKMeans 批大小；NPU 模式下为 cdist 分批大小 |
-| `clustering.n_init` | 3 | Cluster | 3次随机初始化取最优，避免局部最优 |
-| `clustering.npu_chunk_size` | 50,000 | Cluster | NPU 模式：chunk=50K 时单批显存 ≤2.4GB（单卡 64GB 可容） |
+| `clustering.k_per_bucket.stage1_icon` | **100,000** | Cluster | N≈2.25M，avg n_c≈22，7轮FPS→1+2+4=7条/cluster，完美对应三层 |
+| `clustering.k_per_bucket.stage2_illustration` | **0** | Cluster | stage2 不做 KMeans，直接全局 FPS |
+| `clustering.fps_n_select_per_bucket.stage2_illustration` | **300,000** | Cluster | 全局 FPS 从 0.45M 中选 300K |
+| `clustering.minibatch_size` | 50,000 | Cluster | MiniBatchKMeans 批大小（NPU 模式不使用） |
+| `clustering.n_init` | **1** | Cluster | K=100K 时 1 次初始化已足够（多次重启无额外收益） |
+| `clustering.npu_chunk_size` | **40,000** | Cluster | K=100K：40K×100K×4B=16GB 峰值（64GB HBM 安全） |
 | `sampling.total_pool_size` | 1,000,000 | Sample | 蒸馏阶段目标规模 |
-| `sampling.tier_sizes.stage1_icon` | (100K, 200K, 400K) | Sample | icon 三层大小：高优+中优+低优=700K |
-| `sampling.tier_sizes.stage2_illustration` | (100K, 100K, 100K) | Sample | illustration 三层大小：均等三分=300K |
-| `sampling.bucket_quota_overrides.stage2_illustration` | 300,000 | Sample | illustration 提权至 30%（原比例 17%，价值更高） |
+| `sampling.tier_sizes.stage1_icon` | (100K, 200K, 400K) | Sample | icon 三层：FPS round 1 / 2-3 / 4-7 = 700K |
+| `sampling.tier_sizes.stage2_illustration` | **(50K, 100K, 150K)** | Sample | illustration 三层：FPS rank 切分 = 300K |
+| `sampling.bucket_quota_overrides.stage2_illustration` | 300,000 | Sample | illustration 提权至 30%（原比例 17%，训练价值更高） |
 | `num_workers` | 4（默认）/ 128（生产） | 全局 | 对 extract/near_dedup/cluster 阶段并行 |
 
 ---
@@ -815,11 +815,22 @@ Embed 阶段支持 shard 级别的断点续传（已存在的 shard 文件跳过
 
 ### 14.7 NPU KMeans 显存管理
 
-standard Lloyd's K-Means 的完整 N×K 距离矩阵（N=2.25M, K=12K, FP32）约 108GB，超出单卡显存。通过分批 `torch.cdist`（`chunk_size=50,000`）将每步峰值显存降至 2.4GB，在 Ascend 910B（64GB）上安全运行。空 cluster 随机重初始化防止质心退化。
+K=100K 时，完整 N×K 距离矩阵（N=2.25M, K=100K, FP32）约 900GB，远超单卡显存。通过分批计算距离（`chunk_size=40,000`）：每步峰值 = 40K×100K×4B = 16GB，在 Ascend 910B（64GB）上安全运行。
 
-### 14.8 采样比例的数量一致性
+注：相较旧版 K=12K（chunk=50K 时峰值 2.4GB），K=100K 时须将 `npu_chunk_size` 从 50K 降至 40K 以保证显存安全。
 
-`pool_1000k ≡ high_priority_pool ∪ anneal_pool`（集合不相交，union 等于 pool_1000k），通过 id 集合差保证。`anneal_pool_size` 配置值为软约束，实际条数由 pool_1000k 减去 high_priority 决定。
+### 14.8 全局 FPS 的内存效率
+
+NPU FPS 不使用距离矩阵，每步只需一次 GEMV：
+- 无 (N,K,D) 展开，无 N×K 矩阵常驻
+- 常驻显存 = X(440MB) + norms(1.8MB) + min_dist(1.8MB) ≈ **444MB**
+- 每步一次 GEMV：读取 X 全量（440MB），约 0.5ms/步
+
+对比 KMeans：每轮需读取 X 并计算 N×K 距离（GEMM），虽能利用 Tensor Core，但 FPS 的内存密度远更低。
+
+### 14.9 采样比例的数量一致性
+
+`pool_1000k ≡ 六层之并集`（集合不相交，union 等于 pool_1000k），通过 id 集合差保证。六层文件独立写出，可按需自由组合，无需重跑流水线。
 
 ### 14.9 gt_svg 字段的存储与用途
 

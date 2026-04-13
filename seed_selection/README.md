@@ -16,31 +16,33 @@ canonical JSONL (7.7M)
     ↓ dedup_near     MinHash near dedup，分域阈值
     ↓ svg_filter     按 svg_len 过滤 icon 域最简单 10%
     ↓ embed          Qwen3-Embedding-0.6B，256 维，shard 输出
-    ↓ cluster        每 bucket KMeans（三档后端可选：MiniBatchKMeans / faiss-cpu / NPU），记录 cluster_id / centrality
-    ↓ sample         按比例采样 → pool_1000k + 六层分域分级文件
+    ↓ cluster        KMeans + FPS 多样性排序（两桶策略不同）
+                       stage1_icon: KMeans(K=100K) + 类内 FPS → fps_round
+                       stage2_illustration: 直接全局 FPS(300K) → fps_rank
+    ↓ sample         FPS 顺序优先级 → pool_1000k + 六层分域分级文件
 ```
 
 ### 两桶策略
 
-| bucket_key | 域 | K（聚类数） | near dedup 阈值 | 说明 |
+| bucket_key | 域 | Cluster 策略 | near dedup 阈值 | 说明 |
 |---|---|---|---|---|
-| `stage1_icon` | stage1/icon + stage2/icon | 12,000 | 0.8 | stage2/icon 在 exact dedup 中被 stage1/icon 全量覆盖，两者合并 |
-| `stage2_illustration` | stage2/illustration | 6,000 | 0.7 | 语义空间大，细粒度分区 |
+| `stage1_icon` | stage1/icon + stage2/icon | KMeans(K=100K) + 类内 FPS → `fps_round` | 0.8 | stage2/icon 在 exact dedup 中被全量覆盖，两者合并 |
+| `stage2_illustration` | stage2/illustration | 直接全局 FPS(n=300K) → `fps_rank` | 0.7 | 0.45M 条规模，全局 FPS ≈ 2.5 分钟 |
 
 > **为什么 stage2_icon 消失了？**
 > input_paths 中 stage1/icon 文件排在 stage2/icon 之前，exact dedup 使用 first-come-wins 策略。stage2/icon 与 stage1/icon 指令完全重叠，因此在 exact dedup 阶段被全量丢弃。downstream 阶段不再出现 `stage2_icon` domain。
 
 ### 采样配比与六层分级
 
-| 层 | 域 | 数量 | 用途 |
+| 层 | 域 | 数量 | 用途（FPS 优先级）|
 |---|---|---|---|
 | `pool_1000k` | 全部 | ~1,000,000 | 总采样池（六层合并） |
-| `stage1_icon_high` | stage1_icon | 100,000 | 最优代表性样本 |
-| `stage1_icon_medium` | stage1_icon | 200,000 | 次优样本 |
-| `stage1_icon_low` | stage1_icon | 400,000 | 剩余样本 |
-| `stage2_illustration_high` | stage2_illustration | 100,000 | 最优代表性样本 |
-| `stage2_illustration_medium` | stage2_illustration | 100,000 | 次优样本 |
-| `stage2_illustration_low` | stage2_illustration | 100,000 | 剩余样本 |
+| `stage1_icon_high` | stage1_icon | 100,000 | FPS round 1，各 cluster 覆盖最广第一条 |
+| `stage1_icon_medium` | stage1_icon | 200,000 | FPS round 2–3 |
+| `stage1_icon_low` | stage1_icon | 400,000 | FPS round 4–7 |
+| `stage2_illustration_high` | stage2_illustration | **50,000** | 全局 FPS rank 1–50K（最多样） |
+| `stage2_illustration_medium` | stage2_illustration | **100,000** | 全局 FPS rank 50K–150K |
+| `stage2_illustration_low` | stage2_illustration | **150,000** | 全局 FPS rank 150K–300K |
 
 illustration 数据量约占原始数据 17%，但语义复杂度更高、训练价值更大，通过 `bucket_quota_overrides` 手动提升至 300K（占 30%）。
 
@@ -48,8 +50,8 @@ illustration 数据量约占原始数据 17%，但语义复杂度更高、训练
 
 | 训练集需求 | 组合方式 | 总量 |
 |---|---|---|
-| SFT 高质量集（同旧 high_priority） | icon_high + illus_high | 200K |
-| 扩展 SFT | icon(高+中) + illus(高+中) | 500K |
+| SFT 高质量集 | icon_high + illus_high | 150K |
+| 扩展 SFT | icon(高+中) + illus(高+中) | 450K |
 | 完整训练池 | 六层全部 | 1000K |
 
 ### 并行计算设计
@@ -120,9 +122,12 @@ clustering:
 ```yaml
 clustering:
   use_npu: true
-  npu_devices:           # 各 bucket 按顺序 round-robin 分配设备
-    - "npu:0"            # 单卡：2 个 bucket 都用 npu:0，串行
-  npu_chunk_size: 50000  # 分批 cdist 大小（控制显存峰值，50K → ~2.4GB/批）
+  npu_devices:
+    - "npu:0"             # stage1_icon KMeans(K=100K)
+    - "npu:1"             # stage2_illustration 全局 FPS（各自独立，可并行）
+  npu_chunk_size: 40000   # K=100K：40K×100K×4B=16GB 峰值（64GB HBM 安全）
+                          # 旧版 K=12K 时可设 50000（2.4GB/批）
+  n_init: 1               # K=100K 时 1 次初始化已足够
 ```
 
 多卡配置（2 个 bucket 各占一张卡，并行）：
@@ -130,8 +135,8 @@ clustering:
 clustering:
   use_npu: true
   npu_devices:
-    - "npu:0"   # stage1_icon → npu:0
-    - "npu:1"   # stage2_illustration → npu:1
+    - "npu:0"   # stage1_icon KMeans → npu:0（stage2 FPS 不使用 KMeans，直接 FPS）
+    - "npu:1"   # stage2_illustration 全局 FPS → npu:1
 ```
 
 8 卡节点（仍是 2 个 bucket，自动 round-robin，npu:0/npu:1 各跑一个 bucket）：
@@ -164,10 +169,12 @@ seed_selection/
   dedup_near.py      # Step 4：MinHash 近似去重
   svg_filter.py      # Step 5：SVG 复杂度过滤
   embed.py           # Step 6：Qwen3-Embedding，shard 输出
-  cluster.py         # Step 7：KMeans 聚类（三档后端：MiniBatchKMeans / faiss / NPU）
+  cluster.py         # Step 7：KMeans + FPS（两桶策略）
+                     #   stage1_icon:  KMeans(K=100K) + 类内 FPS → fps_round
+                     #   stage2_illus: 直接全局 FPS(300K) → fps_rank
   kmeans_npu.py      # NPU/GPU 加速 KMeans（标准 Lloyd's，torch_npu/torch.cuda）
   kmeans_faiss.py    # faiss-cpu 精确 KMeans（CPU BLAS 加速）
-  sample.py          # Step 8：分层采样（pool_1000k + 六层分域分级）
+  sample.py          # Step 8：FPS 优先级分层采样（pool_1000k + 六层分域分级）
   analyze.py         # 质量报告生成（六层分级分析、层间 distance 单调性验证）
   main.py            # CLI 入口
   configs/

@@ -1,26 +1,36 @@
 """
 Step 8 — sample.py
 
-从聚类结果中采样，产出七个文件：
+从聚类/FPS 结果中采样，产出七个文件：
   - pool_1000k.jsonl                   总采样池（六层合并）
   - stage1_icon_high.jsonl             stage1_icon 高优（100K）
   - stage1_icon_medium.jsonl           stage1_icon 中优（200K）
   - stage1_icon_low.jsonl              stage1_icon 低优（400K）
-  - stage2_illustration_high.jsonl     stage2_illustration 高优（100K）
+  - stage2_illustration_high.jsonl     stage2_illustration 高优（50K）
   - stage2_illustration_medium.jsonl   stage2_illustration 中优（100K）
-  - stage2_illustration_low.jsonl      stage2_illustration 低优（100K）
+  - stage2_illustration_low.jsonl      stage2_illustration 低优（150K）
 
 采样策略：
-  1. 各 bucket 按比例分配 quota（支持 bucket_quota_overrides 显式覆盖）
-  2. bucket 内各 cluster 按 sqrt(cluster_size) 分配 budget，最少 1
-  3. cluster 内按 distance_to_centroid 升序（最近=最中心）选 top-budget
-  4. 六层分层：对每个 bucket 独立执行三阶段 Round-Robin
-     - 各 cluster 内记录已按 distance_to_centroid 升序排列
-     - 循环遍历所有 cluster（Round-Robin），依次取下一条最近记录：
+
+stage1_icon（KMeans K=100K + 类内 FPS）：
+  1. 按 bucket 比例分配 700K quota（支持 bucket_quota_overrides）
+  2. 各 cluster 按 sqrt(cluster_size) 分配 budget（容量感知约束再分配，确保 sum == quota）
+  3. 每个 cluster 内按 fps_round 升序取前 budget 条（FPS 最早选出的 = 最有代表性）
+  4. Round-Robin 三阶段分层：
+     - 各 cluster 内记录按 fps_round 升序排列
+     - 循环 Round-Robin 遍历所有 cluster，依次取下一条：
        · 前 tier_sizes[bucket][0] 条 → 高优（high）
        · 接下来 tier_sizes[bucket][1] 条 → 中优（medium）
        · 剩余 → 低优（low）
-     - 各 cluster 贡献条数均衡，层间质量单调（高优平均距离最小）
+     理论上（K=100K, avg n_c=7）：round 1 → 100K high，round 2-3 → 200K medium，
+     round 4-7 → 400K low
+
+stage2_illustration（直接全局 FPS）：
+  1. 按 fps_rank 升序取前 300K（已在 cluster.py 中由 FPS 选出）
+  2. 直接按 fps_rank 顺序切分：
+     - 前 tier_sizes[bucket][0] → 高优（fps 最早选出，多样性最大）
+     - 接下来 tier_sizes[bucket][1] → 中优
+     - 剩余 → 低优
 """
 
 from __future__ import annotations
@@ -77,7 +87,6 @@ def _allocate_quota(
     overrides = overrides or {}
     result: dict[str, int] = {}
 
-    # 先处理 overrides（clip 到实际数据量，不能超过 bucket 大小）
     override_total = 0
     for k, v in overrides.items():
         if k in bucket_sizes:
@@ -108,13 +117,20 @@ def _allocate_quota(
     return result
 
 
-def _allocate_cluster_budget(cluster_sizes: dict[int, int], total_budget: int) -> dict[int, int]:
+def _allocate_cluster_budget_constrained(
+    cluster_sizes: dict[int, int],
+    total_budget: int,
+) -> dict[int, int]:
     """
     按 sqrt(cluster_size) 分配 budget，总和恰好等于 total_budget。
 
-    - 当 cluster 数 <= total_budget 时：每个 cluster 至少分到 1
-    - 当 cluster 数 > total_budget 时：只给 total_budget 个最大 cluster 各分 1，
-      其余 cluster 分配 0（budget 不足以覆盖所有 cluster）
+    容量感知约束再分配（Capacity-Aware Constrained Redistribution）：
+      1. 按 sqrt(size) 比例初始分配（每个 cluster 至少 1）
+      2. 将超过 cluster_size 的 budget 截断（cap at cluster_size）
+      3. 将超出部分（excess）按 sqrt(size) 重新分配给还有容量的 cluster
+      4. 迭代至收敛（最多 20 轮），确保 sum(budgets) == total_budget
+
+    当 cluster 数 > total_budget 时：按 size 降序选前 total_budget 个，各给 1。
     """
     if not cluster_sizes or total_budget <= 0:
         return {cid: 0 for cid in cluster_sizes}
@@ -129,32 +145,74 @@ def _allocate_cluster_budget(cluster_sizes: dict[int, int], total_budget: int) -
             result[cid] = 1
         return result
 
-    # 正常情况：按 sqrt(size) 比例分配，每个至少 1
+    # 初始分配：按 sqrt(size) 比例，每个至少 1
+    import math
     sqrt_sizes = {cid: math.sqrt(sz) for cid, sz in cluster_sizes.items()}
     total_sqrt = sum(sqrt_sizes.values())
 
-    raw = {cid: total_budget * s / total_sqrt for cid, s in sqrt_sizes.items()}
-    floored = {cid: max(1, int(v)) for cid, v in raw.items()}
-    current_total = sum(floored.values())
+    budget: dict[int, int] = {}
+    for cid, s in sqrt_sizes.items():
+        budget[cid] = max(1, int(total_budget * s / total_sqrt))
 
+    # 迭代约束再分配
+    for _ in range(20):
+        # 截断超出 cluster_size 的部分
+        excess = 0
+        for cid in list(budget):
+            cap = cluster_sizes[cid]
+            if budget[cid] > cap:
+                excess += budget[cid] - cap
+                budget[cid] = cap
+
+        if excess == 0:
+            break
+
+        # 将 excess 按 sqrt(remaining_capacity) 分配给还有容量的 cluster
+        remaining_capacity = {
+            cid: cluster_sizes[cid] - budget[cid]
+            for cid in budget
+            if cluster_sizes[cid] > budget[cid]
+        }
+        if not remaining_capacity:
+            break
+
+        total_rem_sqrt = sum(math.sqrt(v) for v in remaining_capacity.values())
+        if total_rem_sqrt == 0:
+            break
+
+        for cid, cap in remaining_capacity.items():
+            delta = int(excess * math.sqrt(cap) / total_rem_sqrt)
+            budget[cid] = min(budget[cid] + delta, cluster_sizes[cid])
+
+    # 最终微调：确保 sum == total_budget（可能因取整有 ±几 的误差）
+    current_total = sum(budget.values())
     diff = total_budget - current_total
+
     if diff > 0:
-        keys_by_frac = sorted(raw, key=lambda k: raw[k] - floored[k], reverse=True)
-        for k in keys_by_frac:
+        # 还有余量可增加的 cluster（按 remaining capacity 降序）
+        with_capacity = sorted(
+            [cid for cid in budget if budget[cid] < cluster_sizes[cid]],
+            key=lambda c: cluster_sizes[c] - budget[c],
+            reverse=True,
+        )
+        for cid in with_capacity:
             if diff <= 0:
                 break
-            floored[k] += 1
-            diff -= 1
+            add = min(diff, cluster_sizes[cid] - budget[cid])
+            budget[cid] += add
+            diff -= add
     elif diff < 0:
-        keys_by_size = sorted(floored, key=lambda k: floored[k], reverse=True)
-        for k in keys_by_size:
+        # 需要减少（优先从 budget 最大的 cluster 减）
+        by_budget = sorted(budget, key=lambda c: budget[c], reverse=True)
+        for cid in by_budget:
             if diff >= 0:
                 break
-            if floored[k] > 1:
-                floored[k] -= 1
-                diff += 1
+            reduce = min(-diff, budget[cid] - 1)
+            if reduce > 0:
+                budget[cid] -= reduce
+                diff += reduce
 
-    return floored
+    return budget
 
 
 def _assign_priority_tiers(
@@ -162,20 +220,23 @@ def _assign_priority_tiers(
     tier_sizes: dict[str, tuple[int, int, int]],
 ) -> dict[str, dict[str, list[dict]]]:
     """
-    从 pool_1000k 中，对每个 bucket 独立执行三阶段 Round-Robin，
-    将记录分配到高优（high）/ 中优（medium）/ 低优（low）三层。
+    从 pool 中，对每个 bucket 独立分配到高优/中优/低优三层。
 
-    对每个 bucket：
-      1. 按 distance_to_centroid 升序对各 cluster 内记录排序
-      2. Round-Robin 循环遍历所有 cluster，依次取下一条最近记录
-      3. 前 tier_sizes[bucket][0] 条 → high
-      4. 接下来 tier_sizes[bucket][1] 条 → medium
-      5. 剩余所有记录 → low
+    stage1_icon：Round-Robin 三阶段分层
+      - 各 cluster 内记录按 fps_round 升序排列（若无 fps_round 则按 distance_to_centroid）
+      - Round-Robin 循环遍历所有 cluster，依次取下一条：
+        · 前 tier_sizes[bucket][0] 条 → high
+        · 接下来 tier_sizes[bucket][1] 条 → medium
+        · 剩余 → low
+      Round-Robin 保证各 cluster 贡献条数均衡；
+      fps_round 排序保证高优包含每个 cluster 最具代表性的样本。
 
-    Round-Robin 保证各 cluster 贡献条数均衡（不因 distance 绝对值而倾斜）；
-    高优平均 distance 最小，层间质量单调。
+    stage2_illustration：直接按 fps_rank 顺序切分
+      - 记录已按 fps_rank 升序排列（pool 建立时已排序）
+      - 直接切分：前 high_size → high，接下来 medium_size → medium，其余 → low
+      - fps_rank 越小 = FPS 越早选出 = 对全局覆盖贡献越大 = 越高优
     """
-    # 1. 按 bucket_key 分组
+    # 按 bucket_key 分组
     bucket_pool: dict[str, list[dict]] = defaultdict(list)
     for rec in pool_records:
         bk = rec.get("_meta", {}).get("bucket_key", "")
@@ -187,15 +248,34 @@ def _assign_priority_tiers(
         sizes = tier_sizes.get(bucket, (0, 0, len(records)))
         high_size, medium_size = sizes[0], sizes[1]
 
-        # 2. 按 cluster_id 分组并按 distance 升序排列
+        # stage2_illustration：直接按 fps_rank 切分
+        if bucket == "stage2_illustration":
+            sorted_recs = sorted(
+                records,
+                key=lambda r: r.get("_meta", {}).get("fps_rank", 0),
+            )
+            result[bucket] = {
+                "high":   sorted_recs[:high_size],
+                "medium": sorted_recs[high_size:high_size + medium_size],
+                "low":    sorted_recs[high_size + medium_size:],
+            }
+            continue
+
+        # stage1_icon 及其他 bucket：Round-Robin + fps_round 排序
         cluster_queues: dict[int, list[dict]] = defaultdict(list)
         for rec in records:
             cid = rec.get("_meta", {}).get("cluster_id", 0)
             cluster_queues[cid].append(rec)
+
+        def _sort_key(r: dict) -> float:
+            meta = r.get("_meta", {})
+            fps_r = meta.get("fps_round")
+            if fps_r is not None:
+                return float(fps_r)
+            return meta.get("distance_to_centroid", 0.0)
+
         for cid in cluster_queues:
-            cluster_queues[cid].sort(
-                key=lambda r: r.get("_meta", {}).get("distance_to_centroid", 0.0)
-            )
+            cluster_queues[cid].sort(key=_sort_key)
 
         cluster_keys = list(cluster_queues.keys())
         pointers: dict[int, int] = {k: 0 for k in cluster_keys}
@@ -216,11 +296,9 @@ def _assign_priority_tiers(
                         pointers[key] = ptr + 1
                         made_progress = True
 
-        # 3. 依次填充高优和中优，指针连续前进
         _fill_tier("high", high_size)
         _fill_tier("medium", medium_size)
 
-        # 4. 剩余全部归低优（指针后所有记录）
         for key in cluster_keys:
             tiers["low"].extend(cluster_queues[key][pointers[key]:])
 
@@ -240,7 +318,7 @@ def run_sample(
     if tier_sizes is None:
         tier_sizes = {
             "stage1_icon":         (100_000, 200_000, 400_000),
-            "stage2_illustration": (100_000, 100_000, 100_000),
+            "stage2_illustration": (50_000, 100_000, 150_000),
         }
 
     random.seed(random_seed)
@@ -264,7 +342,7 @@ def run_sample(
     for k, q in bucket_quotas.items():
         stats.budget_per_bucket[k] = q
 
-    # 3. 采样 pool_1000k（三层 cluster 配额分配）
+    # 3. 采样 pool_1000k
     pool_records: list[dict] = []
 
     for bucket, records in bucket_records.items():
@@ -272,16 +350,36 @@ def run_sample(
         if quota == 0:
             continue
 
+        # stage2_illustration：按 fps_rank 升序取前 quota 条
+        if bucket == "stage2_illustration":
+            selected = [r for r in records if r.get("_meta", {}).get("fps_rank", 0) > 0]
+            selected.sort(key=lambda r: r.get("_meta", {}).get("fps_rank", 0))
+            pool_records.extend(selected[:quota])
+            logger.info(
+                f"[sample] {bucket}: fps_rank 采样 {min(len(selected), quota):,}/{len(records):,}"
+            )
+            continue
+
+        # stage1_icon 及其他 bucket：容量感知约束 cluster 配额分配
         cluster_groups: dict[int, list[dict]] = defaultdict(list)
         for rec in records:
             cluster_groups[rec.get("_meta", {}).get("cluster_id", 0)].append(rec)
 
         cluster_sizes = {cid: len(recs) for cid, recs in cluster_groups.items()}
-        cluster_budgets = _allocate_cluster_budget(cluster_sizes, quota)
+        cluster_budgets = _allocate_cluster_budget_constrained(cluster_sizes, quota)
 
         for cid, recs in cluster_groups.items():
-            budget = min(cluster_budgets.get(cid, 1), len(recs))
-            sorted_recs = sorted(recs, key=lambda r: r.get("_meta", {}).get("distance_to_centroid", 0))
+            budget = cluster_budgets.get(cid, 0)
+            if budget == 0:
+                continue
+            # 按 fps_round 升序取前 budget 条（FPS 最早选出的 = 最有代表性）
+            sorted_recs = sorted(
+                recs,
+                key=lambda r: r.get("_meta", {}).get(
+                    "fps_round",
+                    r.get("_meta", {}).get("distance_to_centroid", 0),
+                ),
+            )
             pool_records.extend(sorted_recs[:budget])
 
     # 稳定打乱（不影响 downstream reproducibility）
@@ -294,7 +392,7 @@ def run_sample(
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     stats.pool_1000k = len(pool_records)
 
-    # 5. 分域三阶段 Round-Robin 分层
+    # 5. 分 bucket 三阶段分层
     tier_result = _assign_priority_tiers(pool_records, tier_sizes)
 
     # 6. 写六个分层文件
