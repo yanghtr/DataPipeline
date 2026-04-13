@@ -49,10 +49,10 @@
 
 **有效 domain（精确去重后）**：stage2_icon 的所有 instruction 与 stage1_icon 完全重叠（见 §6.3），exact dedup 后仅剩两个有效 domain：
 
-| Domain | 估算记录数（过滤后） | 占比 |
-|--------|-------------------|------|
-| `stage1_icon` | ~2.25M | ~83% |
-| `stage2_illustration` | ~0.45M | ~17% |
+| Domain | 实际记录数（SVG filter 后） | 占比 |
+|--------|--------------------------|------|
+| `stage1_icon` | ~1.44M | ~82% |
+| `stage2_illustration` | ~0.32M | ~18% |
 
 ### 2.2 原始数据格式
 
@@ -474,8 +474,8 @@ embs = embs / clip(norms, 1e-8, ∞)  # 重归一化，防止零向量除法错�
 **根本原因**：最小化 `distance_to_centroid` 的目标是"找最典型代表"，而非"覆盖最广分布"。采样目标应是 **K-center 最优化**（最小化最大覆盖距离），而 Greedy Farthest Point Sampling（FPS）是 K-center 问题的 2-近似算法。
 
 **新设计**：两个 bucket 使用不同策略：
-- `stage1_icon`（2.25M 条）：KMeans(K=100K) 划分语义区域 + 类内 FPS 排序（`fps_round`）
-- `stage2_illustration`（0.45M 条）：直接全局 FPS（`fps_rank`），无需 KMeans
+- `stage1_icon`（~1.44M 条）：KMeans(K=100K) 划分语义区域 + 类内 FPS 排序（`fps_round`）
+- `stage2_illustration`（~0.32M 条）：直接全局 FPS（`fps_rank`），无需 KMeans
 
 ### 10.2 Greedy FPS 算法原理
 
@@ -505,7 +505,7 @@ min_dist[i] = ||x_i - anchor||²   （各点到 anchor 的距离）
 
 #### 为什么不直接对全部 2.25M 做全局 FPS？
 
-直接全局 FPS 需要 700K 步，每步一次 GEMV（读取全部 2.25M×256×4B = 2.25GB 数据），在 NPU 上约 18 分钟（内存带宽瓶颈，GEMV 无法利用矩阵乘的 Tensor Core 加速）。
+直接全局 FPS 需要 700K 步，每步一次 GEMV（读取全部 1.44M×256×4B = 1.44GB 数据），在 NPU 上约 11 分钟（内存带宽瓶颈，GEMV 无法利用矩阵乘的 Tensor Core 加速）。
 
 **层级近似方案**：
 1. KMeans(K=100K) 将空间划分为 100K 个区域（≈ 1 分钟）
@@ -515,8 +515,8 @@ min_dist[i] = ||x_i - anchor||²   （各点到 anchor 的距离）
 #### K=100K 的数学对齐
 
 ```
-N = 2.25M，K = 100K → avg n_c = 22.5 条/cluster
-FPS 最多轮数 = 22，700K 总 budget / 100K clusters = 7 条/cluster
+N = 1.44M，K = 100K → avg n_c = 14.4 条/cluster
+FPS 最多轮数 = 14，700K 总 budget / 100K clusters = 7 条/cluster
 7 条 = round 1 + round 2-3 + round 4-7 = 1 + 2 + 4 = 7 (完美对应三层 1:2:4)
 ```
 
@@ -540,13 +540,13 @@ for step in range(1, n_c):
     min_dist = min(min_dist, ||emb - emb[nxt]||²)
 ```
 
-numpy 向量化实现：`np.einsum("ij,ij->i", diff, diff)` 代替显式循环，`O(Σ n_c²)` 总复杂度，K=100K、avg n_c=22 时约 10–30 秒。
+numpy 向量化实现：`np.einsum("ij,ij->i", diff, diff)` 代替显式循环，`O(Σ n_c²)` 总复杂度，K=100K、avg n_c=14 时约 10–20 秒。
 
 ### 10.4 stage2_illustration：直接全局 FPS（NPU 加速）
 
 #### 为什么 stage2 可以直接全局 FPS？
 
-`stage2_illustration` 仅 0.45M 条，选 300K 步。NPU 上每步一次 GEMV（读 0.45M×256×4B ≈ 440MB），约 0.5ms/步，300K 步 ≈ **2.5 分钟**，可接受。
+`stage2_illustration` 仅 0.32M 条，选 300K 步。NPU 上每步一次 GEMV（读 0.32M×256×4B ≈ 313MB），约 0.35ms/步，300K 步 ≈ **1.8 分钟**，可接受。
 
 #### NPU FPS 实现
 
@@ -561,7 +561,7 @@ min_dist = minimum(min_dist, new_d)
 nxt = argmax(min_dist)
 ```
 
-显存估算（N=450K, D=256, FP32）：X + norms + min_dist ≈ 440MB + 1.8MB + 1.8MB = **< 500MB**（安全）。
+显存估算（N=318K, D=256, FP32）：X + norms + min_dist ≈ 313MB + 1.3MB + 1.3MB = **< 320MB**（安全）。
 
 ### 10.5 KMeans 后端（stage1_icon 使用）
 
@@ -577,7 +577,7 @@ nxt = argmax(min_dist)
 
 | Domain | N | K | GEMM 每批 | scatter_add | X 常驻 | 峰值 |
 |--------|---|---|----------|-------------|--------|------|
-| `stage1_icon` | 2.25M | **100K** | **16 GB** | 80 MB | 2.25 GB | **~18 GB** |
+| `stage1_icon` | 1.44M | **100K** | **16 GB** | 80 MB | 1.44 GB | **~17.5 GB** |
 
 `npu_chunk_size=40,000`（旧值 50K→新值 40K）将单批峰值从 19.2GB 降至 16GB，在 64GB HBM 上安全运行。`n_init=1`（K=100K 时单次初始化已足够，3次需额外 ~2.5h）。
 
@@ -719,23 +719,25 @@ assert union(all_six_tiers) == set(pool_1000k_ids)
 阶段                    数据量          说明
 ──────────────────────────────────────────────────────────────────
 原始输入               ~7,729,000      6 个文件合并
-↓ Extract              ~7,729,000      极少量 skip（格式完整率高）
-↓ Clean                ~7,728,000      近乎无损（过短指令极少）
-↓ Exact Dedup          ~3,320,000      移除 ~57% 精确重复
+↓ Extract               7,729,187      极少量 skip（格式完整率高）
+↓ Clean                 7,729,179      近乎无损（过短指令极少）
+↓ Exact Dedup           2,348,793      移除 ~69.6% 精确重复
                                        · img2svg 与 text2svg 同 domain 内重叠率 ~100%
                                          （相同底层 SVG 图像生成几乎相同的 instruction）
                                          → text2svg 几乎全被 img2svg 覆盖，有效记录集 ≈ img2svg 集
-                                       · stage2_icon（~1.11M）被 stage1_icon 全量覆盖（跨 stage 重叠）
+                                       · stage2_icon 被 stage1_icon 全量覆盖（跨 stage 重叠）
                                        · 有效 domain 缩为两桶：stage1_icon + stage2_illustration
-↓ Near Dedup           ~2,860,000      移除 ~14% 近似重复
+↓ Near Dedup            1,920,621      移除 ~18.2% 近似重复
                                        stage1_icon（阈值 0.8）去重比例高于 illustration（0.7）
-↓ SVG Filter           ~2,700,000      移除 icon 域底部 10% 极简 SVG（~160K 条）
+↓ SVG Filter            1,759,992      移除 icon 域底部 10% 极简 SVG（~160K 条）
                                        illustration 全部保留
-↓ Embed                ~2,700,000      无损（仅向量化，不过滤）
-↓ Cluster              ~2,700,000      无损（附加 cluster/FPS 信息）
+                                       · stage1_icon:       ~1,441,984
+                                       · stage2_illustration:  ~318,008
+↓ Embed                 1,759,992      无损（仅向量化，不过滤）
+↓ Cluster               1,759,992      无损（附加 cluster/FPS 信息）
                                        stage1_icon: KMeans(K=100K) + 类内 FPS → fps_round
                                        stage2_illustration: 全局 FPS(300K) → fps_rank
-↓ Sample               ~1,000,000      从 2.7M 中采 1M（约 37% 采样率）
+↓ Sample                1,000,000      从 1.76M 中采 1M（约 57% 采样率）
 ──────────────────────────────────────────────────────────────────
 pool_1000k             ~1,000,000      总采样池（六层合并）
 stage1_icon_high          100,000      icon 高优（FPS round 1，各 cluster 最多样）
@@ -767,9 +769,9 @@ stage2_illustration_low   150,000      illustration 低优（rank 150K–300K）
 | `embedding.dimension` | 256 | Embed | Matryoshka 截断维度，语义信息/计算开销平衡点（4B/0.6B 均适用） |
 | `embedding.model` | Qwen3-Embedding-4B（生产）/ 0.6B（验证） | Embed | 支持 Matryoshka，只需换 model_path，其余配置不变 |
 | `embedding.shard_size` | 100,000 | Embed | 单 shard 内存 100k×256×4B = 100MB，可控 |
-| `clustering.k_per_bucket.stage1_icon` | **100,000** | Cluster | N≈2.25M，avg n_c≈22，7轮FPS→1+2+4=7条/cluster，完美对应三层 |
+| `clustering.k_per_bucket.stage1_icon` | **100,000** | Cluster | N≈1.44M，avg n_c≈14，7轮FPS→1+2+4=7条/cluster，完美对应三层 |
 | `clustering.k_per_bucket.stage2_illustration` | **0** | Cluster | stage2 不做 KMeans，直接全局 FPS |
-| `clustering.fps_n_select_per_bucket.stage2_illustration` | **300,000** | Cluster | 全局 FPS 从 0.45M 中选 300K |
+| `clustering.fps_n_select_per_bucket.stage2_illustration` | **300,000** | Cluster | 全局 FPS 从 0.32M 中选 300K |
 | `clustering.minibatch_size` | 50,000 | Cluster | MiniBatchKMeans 批大小（NPU 模式不使用） |
 | `clustering.n_init` | **1** | Cluster | K=100K 时 1 次初始化已足够（多次重启无额外收益） |
 | `clustering.npu_chunk_size` | **40,000** | Cluster | K=100K：40K×100K×4B=16GB 峰值（64GB HBM 安全） |
@@ -815,7 +817,7 @@ Embed 阶段支持 shard 级别的断点续传（已存在的 shard 文件跳过
 
 ### 14.7 NPU KMeans 显存管理
 
-K=100K 时，完整 N×K 距离矩阵（N=2.25M, K=100K, FP32）约 900GB，远超单卡显存。通过分批计算距离（`chunk_size=40,000`）：每步峰值 = 40K×100K×4B = 16GB，在 Ascend 910B（64GB）上安全运行。
+K=100K 时，完整 N×K 距离矩阵（N=1.44M, K=100K, FP32）约 576GB，远超单卡显存。通过分批计算距离（`chunk_size=40,000`）：每步峰值 = 40K×100K×4B = 16GB，在 Ascend 910B（64GB）上安全运行。
 
 注：相较旧版 K=12K（chunk=50K 时峰值 2.4GB），K=100K 时须将 `npu_chunk_size` 从 50K 降至 40K 以保证显存安全。
 

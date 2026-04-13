@@ -100,7 +100,7 @@ TIER_DEFS: list[tuple[str, str, str]] = [
 ]
 
 TIER_COLORS = {"high": "coral", "medium": "steelblue", "low": "mediumseagreen"}
-TIER_LABELS = {"high": "高优", "medium": "中优", "low": "低优"}
+TIER_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 
 
 def _tier_path(root: Path, bucket: str, tier: str) -> Path:
@@ -556,7 +556,7 @@ def plot_fps_priority(root: Path, out_dir: Path) -> None:
                         label=TIER_LABELS[tier], color=TIER_COLORS[tier])
         ax.set_xlabel(field)
         ax.set_ylabel("Density")
-        ax.set_title(f"{bucket}\nFPS 优先级分布（高优应在最左侧）")
+        ax.set_title(f"{bucket}\nFPS Priority Dist. (High tier should peak leftmost)")
         ax.legend()
 
     plt.suptitle("FPS Priority Distribution by Tier (high = earliest FPS = most diverse)", y=1.02)
@@ -596,7 +596,7 @@ def plot_distance_hist(root: Path, out_dir: Path) -> None:
                         label=TIER_LABELS[tier], color=TIER_COLORS[tier])
         ax.set_xlabel("Distance to centroid")
         ax.set_ylabel("Density")
-        ax.set_title(f"{bucket}\n辅助参考（高优峰值应在最左侧）")
+        ax.set_title(f"{bucket}\nReference (High tier should peak leftmost)")
         ax.legend()
 
     plt.suptitle("Distance to Centroid — stage1_icon only (auxiliary metric)", y=1.02)

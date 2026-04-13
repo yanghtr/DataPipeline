@@ -27,7 +27,7 @@ canonical JSONL (7.7M)
 | bucket_key | 域 | Cluster 策略 | near dedup 阈值 | 说明 |
 |---|---|---|---|---|
 | `stage1_icon` | stage1/icon + stage2/icon | KMeans(K=100K) + 类内 FPS → `fps_round` | 0.8 | stage2/icon 在 exact dedup 中被全量覆盖，两者合并 |
-| `stage2_illustration` | stage2/illustration | 直接全局 FPS(n=300K) → `fps_rank` | 0.7 | 0.45M 条规模，全局 FPS ≈ 2.5 分钟 |
+| `stage2_illustration` | stage2/illustration | 直接全局 FPS(n=300K) → `fps_rank` | 0.7 | 0.32M 条规模，全局 FPS ≈ 1.8 分钟 |
 
 > **为什么 stage2_icon 消失了？**
 > input_paths 中 stage1/icon 文件排在 stage2/icon 之前，exact dedup 使用 first-come-wins 策略。stage2/icon 与 stage1/icon 指令完全重叠，因此在 exact dedup 阶段被全量丢弃。downstream 阶段不再出现 `stage2_icon` domain。
@@ -428,15 +428,15 @@ near_dedup:
 
 clustering:
   k_per_bucket:
-    stage1_icon: 12000          # ~2.25M 记录，平均 ~188 条/cluster
-    stage2_illustration: 6000   # ~0.45M 记录，语义丰富，细粒度分区
+    stage1_icon: 100000         # ~1.44M 记录，平均 ~14 条/cluster
+    stage2_illustration: 0      # stage2 不做 KMeans，直接全局 FPS
   random_seed: 42
   minibatch_size: 50000         # MiniBatchKMeans 每批大小（faiss/NPU 模式不生效）
   use_npu: false                # true = torch_npu / CUDA 精确 Lloyd's KMeans
   use_faiss: false              # true = faiss-cpu 精确 Lloyd's（use_npu=true 时忽略）
   npu_devices:                  # use_npu=true 时生效，按 bucket 顺序 round-robin 分配
     - "npu:0"                   # 单卡；多卡示例：["npu:0","npu:1"]
-  npu_chunk_size: 50000         # 分批 cdist 大小（控制显存峰值）
+  npu_chunk_size: 40000         # K=100K：40K×100K×4B=16GB 峰值（64GB HBM 安全）
 
 sampling:
   total_pool_size: 1000000
@@ -459,11 +459,11 @@ sampling:
 | extract | 7.7M 条 | ~10 分钟 | ~3 分钟 |
 | clean | ~7.7M | ~3 分钟 | ~3 分钟（无并行）|
 | dedup_exact | ~7.7M | ~5 分钟 | ~5 分钟（无并行）|
-| dedup_near | ~4M | ~80–100 分钟 | **~2–5 分钟**（主要是 Phase 1）|
-| svg_filter | ~4M | ~3 分钟 | ~3 分钟（无并行）|
-| embed | ~2.7M | **18–22 小时**（CPU）| 1–2 小时（GPU ×1）/ ~15 分钟（NPU ×8）|
-| cluster | ~2.7M | ~25 分钟（CPU）| ~10 分钟（2 桶并行） / **~3 分钟**（NPU）|
-| sample | ~2.7M | ~5 分钟 | ~5 分钟（无并行）|
+| dedup_near | ~2.35M | ~80–100 分钟 | **~2–5 分钟**（主要是 Phase 1）|
+| svg_filter | ~1.92M | ~3 分钟 | ~3 分钟（无并行）|
+| embed | ~1.76M | **12–15 小时**（CPU）| ~40 分钟（GPU ×1）/ ~10 分钟（NPU ×8）|
+| cluster | ~1.76M | ~20 分钟（CPU）| ~8 分钟（2 桶并行） / **~2 分钟**（NPU）|
+| sample | ~1.76M | ~5 分钟 | ~5 分钟（无并行）|
 
 embed 是最大瓶颈：CPU 不可行（18–22 小时），强烈建议 GPU/NPU。8 卡 NPU 时设 `num_devices: 8` 可将 embed 缩至 ~15 分钟，全流程约 1 小时。
 
