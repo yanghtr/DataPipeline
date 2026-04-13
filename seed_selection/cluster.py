@@ -544,7 +544,23 @@ def run_cluster(
             ))
             domain_order.append(domain)
 
-        if num_workers > 1 and len(worker_args) > 1:
+        # 当 use_npu=True 时，检查各 bucket 是否共享同一张卡：
+        # 多个进程并发操作同一 NPU，其显存由硬件层面共享。
+        # 若所有 bucket 分配到相同 device，强制串行避免并发 OOM。
+        assigned_devices = [arg[11] for arg in worker_args]  # npu_device 字段
+        npu_conflict = (
+            use_npu
+            and len(worker_args) > 1
+            and len(set(assigned_devices)) < len(assigned_devices)
+        )
+        if npu_conflict:
+            logger.warning(
+                f"[cluster] 检测到多个 bucket 共享同一 NPU 设备 "
+                f"({set(assigned_devices)})，强制串行执行以防 OOM。"
+                f"若要并行，请在 npu_devices 中提供足够多的独立设备。"
+            )
+
+        if num_workers > 1 and len(worker_args) > 1 and not npu_conflict:
             futures = {}
             with ProcessPoolExecutor(
                 max_workers=min(num_workers, len(worker_args)),

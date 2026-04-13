@@ -50,7 +50,8 @@ class ClusterConfig:
     # 每个 bucket worker 按顺序从列表中取设备（round-robin）
     # 单卡：["npu:0"]；双卡：["npu:0", "npu:1"]；8卡：["npu:0",...,"npu:7"]
     npu_devices: list[str] = field(default_factory=lambda: ["npu:0"])
-    npu_chunk_size: int = 40_000   # K=100K 时: 40K×100K×4B=16GB 峰值（安全）
+    npu_chunk_size: int = 40_000   # K=100K 时: in-place 后峰值 40K×100K×4B=16GB（安全）
+                                   # 旧非 in-place 写法峰值为 3×16GB=48GB，见 kmeans_npu._assign_labels
 
 
 @dataclass

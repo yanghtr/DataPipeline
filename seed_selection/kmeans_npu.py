@@ -155,8 +155,19 @@ def _assign_labels(
     50K×12K×256×4B = 614GB → 立即 OOM）。
 
     改用显式公式：||a-b||² = ||a||² - 2·a@b.T + ||b||²
-    中间结果只有 (chunk, K) = 50K×12K×4B = 2.4GB，无 (chunk,K,D) 展开。
-    峰值显存：chunk × K × 4B（chunk=50K, K=12K → 2.4GB）
+    并全程使用 in-place 操作，避免产生多个 (chunk, K) 临时张量。
+
+    显存估算（D=256, FP32）：
+      峰值 = 1 × chunk×K×4B（仅 d 张量）
+      K=12K, chunk=50K → 2.4GB
+      K=100K, chunk=40K → 16GB（原非 in-place 写法峰值为 3×16GB=48GB）
+
+    为何必须 in-place：
+      原写法 `d = x_norm + c_norm.unsqueeze(0) - 2.0 * (x_chunk @ centroids.T)`
+      Python 逐步求值，同时持有 temp1(matmul)、temp2(scale)、temp3(sum) 三个
+      (chunk, K) 张量。Ascend NPU 延迟释放策略下三者同时占显存，K=100K 峰值
+      达 3×16GB=48GB，加上 X(2.25GB) 等常驻数据触发 OOM。
+      in-place 写法只保留 1 个 d 张量，峰值降至 16GB。
     """
     import torch
     c_norm = (centroids ** 2).sum(dim=1)   # (K,)，常量，整个循环只算一次
@@ -164,8 +175,11 @@ def _assign_labels(
     for i in range(0, len(X), chunk_size):
         x_chunk = X[i:i + chunk_size]                          # (chunk, D)
         x_norm = (x_chunk ** 2).sum(dim=1, keepdim=True)      # (chunk, 1)
-        # (chunk, K)：||x||² - 2·x@C.T + ||C||²，无 (chunk,K,D) 展开
-        d = x_norm + c_norm.unsqueeze(0) - 2.0 * (x_chunk @ centroids.T)
+        # in-place：||x||² - 2·x@C.T + ||C||²，全程只有 1 个 (chunk, K) 张量
+        d = x_chunk @ centroids.T   # (chunk, K)，唯一的大临时张量
+        d.mul_(-2.0)                # in-place: -2·x@C.T
+        d.add_(x_norm)              # in-place: +||x||²（(chunk,1) broadcast）
+        d.add_(c_norm)              # in-place: +||C||²（(K,) broadcast）
         labels.append(d.argmin(dim=1))
     return torch.cat(labels)  # (N,)
 
