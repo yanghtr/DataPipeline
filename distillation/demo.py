@@ -12,7 +12,7 @@ App 1：单条调用 debug 脚本。
 from pathlib import Path
 
 from utils.api_client import call_chat_completion, image_text_content, text_content
-from distillation.prompt import SVG_SYSTEM_PROMPT, build_svg_user_content
+from distillation.prompts.svg import SYSTEM_PROMPT as SVG_SYSTEM_PROMPT, build_user_content as build_svg_user_content
 
 # ── 修改以下参数 ──────────────────────────────────────────────────────────────
 URL     = "http://localhost:8000/v1/chat/completions"  # 完整 endpoint

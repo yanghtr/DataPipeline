@@ -25,6 +25,11 @@ call_log_path: "logs/api_calls.jsonl"   # 每次原始 API 调用明细（ts/mod
 #   max_tokens: 8192
 generation_params: {}
 
+# ── Prompt ──────────────────────────────────────────────────────────────────
+# prompts/ 目录下的模块名（不含 .py 后缀）
+# 默认 "svg"，可换成其他模块，如 "code" / "creative" 等
+prompt_module: "svg"
+
 # ── 运行 ────────────────────────────────────────────────────────────────────
 num_workers: 16    # 并发线程数（I/O bound，推荐 16–32）
 resume: true       # 断点续跑：跳过输出文件中已有 id 的记录

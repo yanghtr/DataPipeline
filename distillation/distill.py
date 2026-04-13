@@ -1,11 +1,11 @@
 """
-Step 核心：并行调用 API 进行 SVG 蒸馏，支持 resume / 流式写出 / 错误记录。
+Step 核心：并行调用 API 进行蒸馏，支持 resume / 流式写出 / 错误记录。
 
 输入：  种子 JSONL（含 instruction 字段和 _meta.id）
 输出：  蒸馏结果 JSONL，每行一条成功记录：
         {"id": ..., "instruction": ...,
          "messages": [{"role": "system", ...}, {"role": "user", ...}],
-         "response": "<svg>...</svg>", "reasoning_content": "...(仅 enable_thinking)",
+         "response": "...", "reasoning_content": "...(仅 enable_thinking)",
          "model": ..., "prompt_tokens": ..., "completion_tokens": ..., "finish_reason": ...}
         失败记录不写入 output，由 call_log_path 完整记录（含错误详情）。
         Resume 时 output 中的 ID 均为成功，未出现的 ID 自动重试。
@@ -13,16 +13,29 @@ Step 核心：并行调用 API 进行 SVG 蒸馏，支持 resume / 流式写出 
 
 from __future__ import annotations
 
+import importlib
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from types import ModuleType
 
 from loguru import logger
 
 from utils.api_client import call_chat_completion
 from .config import DistillConfig
-from .prompt import SVG_SYSTEM_PROMPT, build_svg_user_content
+
+
+def _load_prompt_module(name: str) -> ModuleType:
+    """动态加载 distillation/prompts/<name>.py，校验接口约定。"""
+    module = importlib.import_module(f"distillation.prompts.{name}")
+    for attr in ("SYSTEM_PROMPT", "build_user_content"):
+        if not hasattr(module, attr):
+            raise AttributeError(
+                f"prompt 模块 '{name}' 缺少必要属性 '{attr}'，"
+                "请确保模块导出 SYSTEM_PROMPT: str 和 build_user_content(instruction) -> list[dict]"
+            )
+    return module
 
 
 def run_distill(
@@ -36,6 +49,10 @@ def run_distill(
         cfg:   蒸馏配置
         limit: 仅处理前 N 条（调试用）
     """
+    pm = _load_prompt_module(cfg.prompt_module)
+    system_prompt: str = pm.SYSTEM_PROMPT
+    build_user_content = pm.build_user_content
+
     input_path = Path(cfg.input_path)
     output_path = Path(cfg.output_path)
     call_log_path = Path(cfg.call_log_path)
@@ -88,10 +105,10 @@ def run_distill(
         nonlocal ok_count, err_count
         rec_id = _get_id(rec)
         instruction = rec.get("instruction", "")
-        user_content = build_svg_user_content(instruction)
+        user_content = build_user_content(instruction)
         # 记录完整的蒸馏输入（system + user messages），精确复现实际请求
         messages_sent: list[dict] = [
-            {"role": "system", "content": SVG_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ]
 
@@ -102,7 +119,7 @@ def run_distill(
                 api_key=cfg.api_key,
                 model=cfg.model,
                 user_content=user_content,
-                system=SVG_SYSTEM_PROMPT,
+                system=system_prompt,
                 timeout=cfg.timeout,
                 max_retries=cfg.max_retries,
                 ssl_verify=cfg.ssl_verify,

@@ -28,6 +28,9 @@ class DistillConfig:
     generation_params: dict = field(default_factory=dict)
     # 示例：{"temperature": 0.2, "max_tokens": 8192, "top_p": 0.95}
 
+    # ── Prompt ───────────────────────────────────────────────────────────────
+    prompt_module: str = "svg"        # prompts/ 下的模块名（不含 .py），如 "svg"
+
     # ── 运行 ─────────────────────────────────────────────────────────────────
     num_workers: int = 16             # 并发线程数（I/O bound，16–32 通常足够）
     resume: bool = True               # 断点续跑：跳过已有输出中的 id

@@ -10,10 +10,11 @@
 ```
 distillation/
   config.py          # DistillConfig dataclass + YAML 加载
-  prompt.py          # SVG system prompt + user content 构造
   distill.py         # run_distill()：并行调用 + resume + 流式写出
   demo.py            # App 1：单条调用 debug（直接改参数运行）
   main.py            # CLI 入口
+  prompts/           # Prompt 模块目录，每个文件对应一套 system/user prompt
+    svg.py           # SVG 蒸馏 prompt（默认）
   configs/
     default.yaml     # 配置模板
 
@@ -97,6 +98,9 @@ call_log_path: "logs/api_calls.jsonl"   # 每次调用完整记录（含 query �
 
 # 生成参数：{} = 完全使用模型默认值
 generation_params: {}
+
+# prompts/ 目录下的模块名（不含 .py 后缀）
+prompt_module: "svg"
 
 num_workers: 16    # 并发线程数（推荐 16–32）
 resume: true       # 断点续跑
@@ -206,6 +210,42 @@ generation_params:
 
 ---
 
+## 自定义 Prompt
+
+不同任务的 system/user prompt 放在 `prompts/` 目录下，每个文件是一个独立模块。
+切换 prompt 只需修改 YAML 中的 `prompt_module` 字段，无需改代码。
+
+### 接口约定
+
+每个 prompt 模块必须导出：
+
+```python
+SYSTEM_PROMPT: str                                           # 系统 prompt
+def build_user_content(instruction: str) -> list[dict]: ... # user 消息构造函数
+```
+
+### 新增 prompt
+
+1. 在 `distillation/prompts/` 下新建文件，如 `code.py`：
+
+```python
+from utils.api_client import text_content
+
+SYSTEM_PROMPT: str = "You are an expert code generator. ..."
+
+def build_user_content(instruction: str) -> list[dict]:
+    prompt = f"Generate code for: {instruction}\n..."
+    return text_content(prompt)
+```
+
+2. 在 YAML 中指定：
+
+```yaml
+prompt_module: "code"
+```
+
+---
+
 ## Retry 策略
 
 | 错误类型 | 行为 |
@@ -237,7 +277,7 @@ TEXT  = "Generate an SVG similar to this image"
 
 图片会被 base64 编码，以 `data:image/png;base64,...` 格式内联在请求中。
 call log 中只记录图片的 MIME type（如 `image/png`），不记录 base64 数据。
-批量蒸馏（App 2）当前仅使用文本 instruction，图文支持可在 `prompt.py` 中扩展。
+批量蒸馏（App 2）当前仅使用文本 instruction，图文支持可在对应的 `prompts/<name>.py` 中扩展。
 
 ---
 
