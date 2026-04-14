@@ -13,11 +13,8 @@ convert
 filter
     读取中间 JSONL → 根据 _meta 字段过滤 → 生成最终 JSONL（不含 _meta）。
 
-目录约定（相对输出根目录 --output）
-------------------------------------
-  stage1_icon/img2svg/images/          渲染后图片（PNG）
-  stage1_icon/img2svg/intermediate/    带 _meta 的中间 JSONL
-  stage1_icon/img2svg/jsonl/           最终 JSONL（filter 后产出）
+所有路径（图片目录、image-root、中间/最终 JSONL）均由调用方（shell 脚本）显式传入，
+本脚本不硬编码任何数据集特定子目录。
 """
 
 from __future__ import annotations
@@ -261,12 +258,12 @@ def _process_record(args: tuple) -> dict:
 
     Parameters (as a single tuple for pickling)
     --------------------------------------------
-    idx              : 0-based record index (determines image filename)
-    record           : dict parsed from input JSONL
-    images_dir       : absolute path (str) to the images output directory
-    image_rel_prefix : relative path prefix used in image.relative_path
-                       (e.g. "stage1_icon/img2svg/images")
-    train_mode       : "sft" or "pretrain"
+    idx        : 0-based record index (determines image filename)
+    record     : dict parsed from input JSONL
+    images_dir : absolute path (str) to the images output directory
+    image_root : absolute path (str) used as the base for relative_path computation;
+                 relative_path = os.path.relpath(image_abs_path, image_root)
+    train_mode : "sft" or "pretrain"
 
     Returns
     -------
@@ -275,7 +272,7 @@ def _process_record(args: tuple) -> dict:
       record      : canonical sample dict (with _meta) — always present
       skip_reason : str or None
     """
-    idx, record, images_dir, image_rel_prefix, train_mode = args
+    idx, record, images_dir, image_root, train_mode = args
 
     meta: dict = {
         "input_id": record.get("id"),
@@ -326,7 +323,7 @@ def _process_record(args: tuple) -> dict:
 
     # 7. Build canonical sample
     #    Order: image first, then text (per task spec section 4.3)
-    relative_path = f"{image_rel_prefix}/{image_filename}"
+    relative_path = os.path.relpath(image_abs_path, image_root)
     user_content = [
         build_image_item(relative_path, "image/png", actual_w, actual_h),
         build_text_item(instruction),
@@ -351,24 +348,33 @@ def _process_record(args: tuple) -> dict:
 
 def run_convert(
     input_path: Path,
-    output_root: Path,
+    images_dir: Path,
+    image_root: Path,
+    inter_jsonl: Path,
     train_mode: str,
     workers: int,
     log_path: Optional[Path],
 ) -> None:
-    """Read raw JSONL, render SVGs in parallel, write intermediate JSONL with _meta."""
+    """Read raw JSONL, render SVGs in parallel, write intermediate JSONL with _meta.
 
-    images_dir = output_root / "stage1_icon" / "img2svg" / "images"
-    inter_dir = output_root / "stage1_icon" / "img2svg" / "intermediate"
+    Args:
+        input_path  : raw input JSONL file
+        images_dir  : directory where rendered PNG files are written
+        image_root  : base directory for computing image relative_path in canonical schema
+                      (relative_path = images_dir/filename relative to image_root)
+        inter_jsonl : output path for the intermediate JSONL (with _meta)
+        train_mode  : "sft" or "pretrain"
+        workers     : number of parallel worker processes
+        log_path    : optional log file path
+    """
     images_dir.mkdir(parents=True, exist_ok=True)
-    inter_dir.mkdir(parents=True, exist_ok=True)
-
-    image_rel_prefix = "stage1_icon/img2svg/images"
-    out_jsonl = inter_dir / "data_000000.jsonl"
+    inter_jsonl.parent.mkdir(parents=True, exist_ok=True)
 
     _setup_logging(log_path)
     logger.info(f"[convert] input:      {input_path}")
-    logger.info(f"[convert] output:     {output_root}")
+    logger.info(f"[convert] images_dir: {images_dir}")
+    logger.info(f"[convert] image_root: {image_root}")
+    logger.info(f"[convert] inter_jsonl:{inter_jsonl}")
     logger.info(f"[convert] train_mode: {train_mode}")
     logger.info(f"[convert] workers:    {workers}")
 
@@ -392,7 +398,7 @@ def run_convert(
 
     # ── Parallel processing ──
     worker_args = [
-        (idx, rec, str(images_dir), image_rel_prefix, train_mode)
+        (idx, rec, str(images_dir), str(image_root), train_mode)
         for idx, rec in enumerate(records)
     ]
     results: list[Optional[dict]] = [None] * total
@@ -420,7 +426,7 @@ def run_convert(
     success = skipped = 0
     skip_reasons: dict[str, int] = {}
 
-    with open(out_jsonl, "w", encoding="utf-8") as f:
+    with open(inter_jsonl, "w", encoding="utf-8") as f:
         for res in results:
             if res is None:
                 continue
@@ -433,7 +439,7 @@ def run_convert(
             f.write(json.dumps(res["record"], ensure_ascii=False) + "\n")
 
     _print_stats(total, success, skipped, skip_reasons, note="(pre-filter)")
-    logger.info(f"[convert] intermediate JSONL written: {out_jsonl}")
+    logger.info(f"[convert] intermediate JSONL written: {inter_jsonl}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -443,25 +449,28 @@ def run_convert(
 
 def run_filter(
     intermediate_jsonl: Path,
-    output_root: Path,
+    output_jsonl: Path,
     log_path: Optional[Path],
 ) -> None:
-    """Read intermediate JSONL, filter on _meta flags, write final JSONL without _meta."""
+    """Read intermediate JSONL, filter on _meta flags, write final JSONL without _meta.
 
-    final_dir = output_root / "stage1_icon" / "img2svg" / "jsonl"
-    final_dir.mkdir(parents=True, exist_ok=True)
-    out_jsonl = final_dir / "data_000000.jsonl"
+    Args:
+        intermediate_jsonl : intermediate JSONL produced by convert step (contains _meta)
+        output_jsonl       : final output JSONL path (no _meta)
+        log_path           : optional log file path
+    """
+    output_jsonl.parent.mkdir(parents=True, exist_ok=True)
 
     _setup_logging(log_path)
     logger.info(f"[filter] input:  {intermediate_jsonl}")
-    logger.info(f"[filter] output: {out_jsonl}")
+    logger.info(f"[filter] output: {output_jsonl}")
 
     total = kept = filtered = 0
     filter_reasons: dict[str, int] = {}
 
     with (
         open(intermediate_jsonl, "r", encoding="utf-8") as fin,
-        open(out_jsonl, "w", encoding="utf-8") as fout,
+        open(output_jsonl, "w", encoding="utf-8") as fout,
     ):
         for lineno, line in enumerate(fin, 1):
             line = line.strip()
@@ -501,7 +510,7 @@ def run_filter(
             kept += 1
 
     _print_stats(total, kept, filtered, filter_reasons, note="(filter pass)")
-    logger.info(f"[filter] final JSONL written: {out_jsonl}")
+    logger.info(f"[filter] final JSONL written: {output_jsonl}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -561,9 +570,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="输入 JSONL 文件路径",
     )
     conv.add_argument(
-        "--output", "-o", required=True, type=Path,
+        "--images-dir", required=True, type=Path,
         metavar="DIR",
-        help="输出数据集根目录",
+        help="渲染后 PNG 图片的输出目录",
+    )
+    conv.add_argument(
+        "--image-root", required=True, type=Path,
+        metavar="DIR",
+        help="canonical schema 中 relative_path 的计算基准目录（full_path = image_root / relative_path）",
+    )
+    conv.add_argument(
+        "--inter-jsonl", required=True, type=Path,
+        metavar="FILE",
+        help="中间 JSONL 输出文件路径（含 _meta）",
     )
     conv.add_argument(
         "--train-mode", default="sft", choices=["sft", "pretrain"],
@@ -591,9 +610,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="中间 JSONL 文件路径（convert 阶段产出）",
     )
     filt.add_argument(
-        "--output", "-o", required=True, type=Path,
-        metavar="DIR",
-        help="输出数据集根目录",
+        "--output-jsonl", required=True, type=Path,
+        metavar="FILE",
+        help="最终 JSONL 输出文件路径（不含 _meta）",
     )
     filt.add_argument(
         "--log-path", type=Path, default=None,
@@ -609,7 +628,9 @@ def main() -> None:
     if args.mode == "convert":
         run_convert(
             input_path=args.input,
-            output_root=args.output,
+            images_dir=args.images_dir,
+            image_root=args.image_root,
+            inter_jsonl=args.inter_jsonl,
             train_mode=args.train_mode,
             workers=args.workers,
             log_path=args.log_path,
@@ -617,7 +638,7 @@ def main() -> None:
     else:
         run_filter(
             intermediate_jsonl=args.input,
-            output_root=args.output,
+            output_jsonl=args.output_jsonl,
             log_path=args.log_path,
         )
 
