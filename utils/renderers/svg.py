@@ -16,12 +16,17 @@ from __future__ import annotations
 
 import io
 import re
+import signal
 from pathlib import Path
 from typing import Union
 
 from PIL import Image
 
 from .base import RenderResult
+
+
+def _sigalrm_handler(signum: int, frame: object) -> None:
+    raise TimeoutError("SVG render timed out")
 
 # ── SVG 属性解析正则 ──────────────────────────────────────────────────────────
 # 匹配数字或带 px 单位的数字；百分比等相对值不匹配（回退到 viewBox）
@@ -60,6 +65,7 @@ def render_svg(
     width: int = 0,
     height: int = 0,
     background_color: tuple[int, int, int] = (255, 255, 255),
+    timeout: int = 60,
 ) -> RenderResult:
     """将 SVG 代码渲染为 PNG 并保存到 output_path。
 
@@ -75,6 +81,7 @@ def render_svg(
         width            : 渲染目标宽度（像素）；0 表示使用 SVG 自身尺寸
         height           : 渲染目标高度（像素）；0 表示使用 SVG 自身尺寸
         background_color : RGB 背景颜色，默认纯白 (255, 255, 255)
+        timeout          : cairosvg 渲染超时秒数；0 表示不限时（仅 Linux/macOS 有效）
 
     Returns:
         RenderResult — 包含 success、实际 width/height、error 信息
@@ -88,6 +95,9 @@ def render_svg(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. 用 CairoSVG 渲染为内存 PNG bytes（background_color 直接由 cairosvg 填充）
+    #    用 SIGALRM 守护超时：cairosvg 内部是 C 代码，Python 层无法通过线程中断，
+    #    SIGALRM 可以直接打断 C 层阻塞（仅限进程主线程，ProcessPoolExecutor worker 满足此条件）。
+    _alarm_armed = False
     try:
         r, g, b = background_color
         kwargs: dict = {"background_color": f"#{r:02x}{g:02x}{b:02x}"}
@@ -95,11 +105,22 @@ def render_svg(
             kwargs["output_width"] = width
         if height > 0:
             kwargs["output_height"] = height
+
+        if timeout > 0 and hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, _sigalrm_handler)
+            signal.alarm(timeout)
+            _alarm_armed = True
+
         png_bytes: bytes = cairosvg.svg2png(
             bytestring=svg_code.encode("utf-8"), **kwargs
         )
+    except TimeoutError:
+        return RenderResult(success=False, error=f"render timeout after {timeout}s")
     except Exception as e:
         return RenderResult(success=False, error=f"cairosvg render error: {e}")
+    finally:
+        if _alarm_armed:
+            signal.alarm(0)  # 取消未触发的闹钟
 
     # 2. 保存并读取实际像素尺寸
     try:

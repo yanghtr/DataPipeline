@@ -207,8 +207,9 @@ def _process_record(args: tuple) -> dict:
     images_dir : absolute path (str) to the images output directory
     image_root : absolute path (str) used as the base for relative_path computation;
                  relative_path = os.path.relpath(image_abs_path, image_root)
-    train_mode : "sft" or "pretrain"
-    shard_size : number of images per subdirectory; 0 disables sharding
+    train_mode      : "sft" or "pretrain"
+    shard_size      : number of images per subdirectory; 0 disables sharding
+    render_timeout  : per-record cairosvg timeout in seconds; 0 disables timeout
 
     Returns
     -------
@@ -217,7 +218,7 @@ def _process_record(args: tuple) -> dict:
       record      : canonical sample dict (with _meta) — always present
       skip_reason : str or None
     """
-    idx, record, images_dir, image_root, train_mode, shard_size = args
+    idx, record, images_dir, image_root, train_mode, shard_size, render_timeout = args
 
     meta: dict = {
         "input_id": record.get("id"),
@@ -260,7 +261,7 @@ def _process_record(args: tuple) -> dict:
         image_abs_path = os.path.join(images_dir, f"{shard_idx:05d}", image_filename)
     else:
         image_abs_path = os.path.join(images_dir, image_filename)
-    result: RenderResult = render_svg(svg_code, image_abs_path, svg_width, svg_height)
+    result: RenderResult = render_svg(svg_code, image_abs_path, svg_width, svg_height, timeout=render_timeout)
     meta["render_success"] = result.success
     if not result.success:
         meta["render_error"] = result.error
@@ -307,32 +308,35 @@ def run_convert(
     train_mode: str,
     workers: int,
     shard_size: int,
+    render_timeout: int,
     log_path: Optional[Path],
 ) -> None:
     """Read raw JSONL, render SVGs in parallel, write intermediate JSONL with _meta.
 
     Args:
-        input_path  : raw input JSONL file
-        images_dir  : directory where rendered PNG files are written
-        image_root  : base directory for computing image relative_path in canonical schema
-                      (relative_path = images_dir/filename relative to image_root)
-        inter_jsonl : output path for the intermediate JSONL (with _meta)
-        train_mode  : "sft" or "pretrain"
-        workers     : number of parallel worker processes
-        shard_size  : max images per subdirectory under images_dir; 0 disables sharding
-        log_path    : optional log file path
+        input_path      : raw input JSONL file
+        images_dir      : directory where rendered PNG files are written
+        image_root      : base directory for computing image relative_path in canonical schema
+                          (relative_path = images_dir/filename relative to image_root)
+        inter_jsonl     : output path for the intermediate JSONL (with _meta)
+        train_mode      : "sft" or "pretrain"
+        workers         : number of parallel worker processes
+        shard_size      : max images per subdirectory under images_dir; 0 disables sharding
+        render_timeout  : per-record cairosvg timeout in seconds; 0 disables timeout
+        log_path        : optional log file path
     """
     images_dir.mkdir(parents=True, exist_ok=True)
     inter_jsonl.parent.mkdir(parents=True, exist_ok=True)
 
     _setup_logging(log_path)
-    logger.info(f"[convert] input:      {input_path}")
-    logger.info(f"[convert] images_dir: {images_dir}")
-    logger.info(f"[convert] image_root: {image_root}")
-    logger.info(f"[convert] inter_jsonl:{inter_jsonl}")
-    logger.info(f"[convert] train_mode: {train_mode}")
-    logger.info(f"[convert] workers:    {workers}")
-    logger.info(f"[convert] shard_size: {shard_size if shard_size > 0 else 'disabled'}")
+    logger.info(f"[convert] input:          {input_path}")
+    logger.info(f"[convert] images_dir:     {images_dir}")
+    logger.info(f"[convert] image_root:     {image_root}")
+    logger.info(f"[convert] inter_jsonl:    {inter_jsonl}")
+    logger.info(f"[convert] train_mode:     {train_mode}")
+    logger.info(f"[convert] workers:        {workers}")
+    logger.info(f"[convert] shard_size:     {shard_size if shard_size > 0 else 'disabled'}")
+    logger.info(f"[convert] render_timeout: {render_timeout if render_timeout > 0 else 'disabled'}s")
 
     # ── Read all records ──
     records: list[dict] = []
@@ -354,7 +358,7 @@ def run_convert(
 
     # ── Parallel processing ──
     worker_args = [
-        (idx, rec, str(images_dir), str(image_root), train_mode, shard_size)
+        (idx, rec, str(images_dir), str(image_root), train_mode, shard_size, render_timeout)
         for idx, rec in enumerate(records)
     ]
     results: list[Optional[dict]] = [None] * total
@@ -555,6 +559,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="每个子目录最多存放的图片数（默认: 5000；0 表示不分目录）",
     )
     conv.add_argument(
+        "--render-timeout", type=int, default=60,
+        metavar="SECS",
+        help="单条 SVG 渲染超时秒数（默认: 60；0 表示不限时）",
+    )
+    conv.add_argument(
         "--log-path", type=Path, default=None,
         metavar="FILE",
         help="日志文件路径（可选）",
@@ -595,6 +604,7 @@ def main() -> None:
             train_mode=args.train_mode,
             workers=args.workers,
             shard_size=args.shard_size,
+            render_timeout=args.render_timeout,
             log_path=args.log_path,
         )
     else:
