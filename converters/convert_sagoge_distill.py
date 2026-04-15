@@ -28,9 +28,20 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 from loguru import logger
-from PIL import Image
+
+# 将 utils 包添加到 sys.path（子进程中同样生效）
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from utils.renderers import (  # noqa: E402
+    RenderResult,
+    check_all_white,
+    get_svg_dimensions,
+    read_image_size,
+    render_svg,
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Canonical schema builders
@@ -155,21 +166,10 @@ def validate_sample(sample: dict) -> tuple[bool, Optional[str]]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SVG utilities
+# SVG text extraction (format-specific to SAgoge distillation responses)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _SVG_FENCE_RE = re.compile(r"```svg\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
-# width/height: match plain numbers or numbers with px unit
-_SVG_ATTR_W_RE = re.compile(
-    r'<svg\b[^>]*\bwidth=["\'](\d+(?:\.\d+)?)(?:px)?["\']', re.IGNORECASE
-)
-_SVG_ATTR_H_RE = re.compile(
-    r'<svg\b[^>]*\bheight=["\'](\d+(?:\.\d+)?)(?:px)?["\']', re.IGNORECASE
-)
-_SVG_VIEWBOX_RE = re.compile(
-    r'<svg\b[^>]*\bviewBox=["\'][\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)["\']',
-    re.IGNORECASE,
-)
 
 
 def extract_last_svg(response: str) -> Optional[str]:
@@ -189,62 +189,6 @@ def extract_last_svg(response: str) -> Optional[str]:
         return bare[-1].strip()
 
     return None
-
-
-def get_svg_dimensions(svg_code: str) -> tuple[int, int]:
-    """
-    Determine width and height from SVG attributes.
-    Priority: explicit width/height attrs → viewBox → (0, 0).
-    Percentage and non-numeric widths are ignored (fall through to viewBox).
-    """
-    w_m = _SVG_ATTR_W_RE.search(svg_code)
-    h_m = _SVG_ATTR_H_RE.search(svg_code)
-    if w_m and h_m:
-        return int(float(w_m.group(1))), int(float(h_m.group(1)))
-
-    vb_m = _SVG_VIEWBOX_RE.search(svg_code)
-    if vb_m:
-        return int(float(vb_m.group(1))), int(float(vb_m.group(2)))
-
-    return 0, 0
-
-
-def render_svg_to_png(
-    svg_code: str,
-    output_path: str,
-    width: int,
-    height: int,
-) -> bool:
-    """Render SVG to PNG via CairoSVG. Returns True on success."""
-    try:
-        import cairosvg  # imported inside worker to avoid import issues in main process
-
-        kwargs: dict = {"write_to": output_path}
-        if width > 0:
-            kwargs["output_width"] = width
-        if height > 0:
-            kwargs["output_height"] = height
-        cairosvg.svg2png(bytestring=svg_code.encode("utf-8"), **kwargs)
-        return True
-    except Exception:
-        return False
-
-
-def read_image_size(image_path: str) -> tuple[int, int]:
-    """Return (width, height) from an image file, or (0, 0) on failure."""
-    try:
-        return Image.open(image_path).size  # PIL returns (width, height)
-    except Exception:
-        return 0, 0
-
-
-def check_all_white(image_path: str, threshold: int = 250) -> bool:
-    """Return True if all pixels in the image are >= threshold on all RGB channels."""
-    try:
-        arr = np.array(Image.open(image_path).convert("RGB"))
-        return bool(np.all(arr >= threshold))
-    except Exception:
-        return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -303,21 +247,22 @@ def _process_record(args: tuple) -> dict:
         return _fail("missing_svg_code")
     meta["svg_format_valid"] = True
 
-    # 3. Determine SVG render dimensions
+    # 3. Determine SVG render dimensions (width/height attrs → viewBox → 0)
     svg_width, svg_height = get_svg_dimensions(svg_code)
 
-    # 4. Render SVG to PNG
+    # 4. Render SVG to PNG with white background
     image_filename = f"{idx:09d}.png"
     image_abs_path = os.path.join(images_dir, image_filename)
-    render_ok = render_svg_to_png(svg_code, image_abs_path, svg_width, svg_height)
-    meta["render_success"] = render_ok
-    if not render_ok:
+    result: RenderResult = render_svg(svg_code, image_abs_path, svg_width, svg_height)
+    meta["render_success"] = result.success
+    if not result.success:
+        meta["render_error"] = result.error
         return _fail("render_failed")
 
-    # 5. Read back actual image dimensions (may differ from SVG attrs after rasterization)
-    actual_w, actual_h = read_image_size(image_abs_path)
+    # RenderResult already carries actual pixel dimensions from the composited image
+    actual_w, actual_h = result.width, result.height
 
-    # 6. All-white check — recorded in _meta, NOT used to skip at convert time;
+    # 5. All-white check — recorded in _meta, NOT used to skip at convert time;
     #    filtering happens in the separate filter step.
     meta["is_all_white"] = check_all_white(image_abs_path)
 
