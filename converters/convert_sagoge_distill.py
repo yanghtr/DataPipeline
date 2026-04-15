@@ -264,7 +264,8 @@ def _process_record(args: tuple) -> dict:
 
     # 5. All-white check — recorded in _meta, NOT used to skip at convert time;
     #    filtering happens in the separate filter step.
-    meta["is_all_white"] = check_all_white(image_abs_path)
+    #    Pass png_bytes directly to avoid re-reading the file from disk.
+    meta["is_all_white"] = check_all_white(result.png_bytes or image_abs_path)
 
     # 7. Build canonical sample
     #    Order: image first, then text (per task spec section 4.3)

@@ -103,10 +103,10 @@ def render_svg(
 
     # 2. 保存并读取实际像素尺寸
     try:
-        result_img = Image.open(io.BytesIO(png_bytes))
-        result_img.save(str(output_path), format="PNG")
-        actual_w, actual_h = result_img.size
+        with Image.open(io.BytesIO(png_bytes)) as result_img:
+            result_img.save(str(output_path), format="PNG")
+            actual_w, actual_h = result_img.size
     except Exception as e:
         return RenderResult(success=False, error=f"image save error: {e}")
 
-    return RenderResult(success=True, width=actual_w, height=actual_h)
+    return RenderResult(success=True, width=actual_w, height=actual_h, png_bytes=png_bytes)
