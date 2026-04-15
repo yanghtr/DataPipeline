@@ -208,6 +208,7 @@ def _process_record(args: tuple) -> dict:
     image_root : absolute path (str) used as the base for relative_path computation;
                  relative_path = os.path.relpath(image_abs_path, image_root)
     train_mode : "sft" or "pretrain"
+    shard_size : number of images per subdirectory; 0 disables sharding
 
     Returns
     -------
@@ -216,7 +217,7 @@ def _process_record(args: tuple) -> dict:
       record      : canonical sample dict (with _meta) — always present
       skip_reason : str or None
     """
-    idx, record, images_dir, image_root, train_mode = args
+    idx, record, images_dir, image_root, train_mode, shard_size = args
 
     meta: dict = {
         "input_id": record.get("id"),
@@ -251,8 +252,14 @@ def _process_record(args: tuple) -> dict:
     svg_width, svg_height = get_svg_dimensions(svg_code)
 
     # 4. Render SVG to PNG with white background
+    #    Shard into subdirectories to avoid large flat directories (e.g. 5000/shard).
+    #    Subdir name is the zero-padded shard index; filename is the global record index.
     image_filename = f"{idx:09d}.png"
-    image_abs_path = os.path.join(images_dir, image_filename)
+    if shard_size > 0:
+        shard_idx = idx // shard_size
+        image_abs_path = os.path.join(images_dir, f"{shard_idx:05d}", image_filename)
+    else:
+        image_abs_path = os.path.join(images_dir, image_filename)
     result: RenderResult = render_svg(svg_code, image_abs_path, svg_width, svg_height)
     meta["render_success"] = result.success
     if not result.success:
@@ -299,6 +306,7 @@ def run_convert(
     inter_jsonl: Path,
     train_mode: str,
     workers: int,
+    shard_size: int,
     log_path: Optional[Path],
 ) -> None:
     """Read raw JSONL, render SVGs in parallel, write intermediate JSONL with _meta.
@@ -311,6 +319,7 @@ def run_convert(
         inter_jsonl : output path for the intermediate JSONL (with _meta)
         train_mode  : "sft" or "pretrain"
         workers     : number of parallel worker processes
+        shard_size  : max images per subdirectory under images_dir; 0 disables sharding
         log_path    : optional log file path
     """
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -323,6 +332,7 @@ def run_convert(
     logger.info(f"[convert] inter_jsonl:{inter_jsonl}")
     logger.info(f"[convert] train_mode: {train_mode}")
     logger.info(f"[convert] workers:    {workers}")
+    logger.info(f"[convert] shard_size: {shard_size if shard_size > 0 else 'disabled'}")
 
     # ── Read all records ──
     records: list[dict] = []
@@ -344,7 +354,7 @@ def run_convert(
 
     # ── Parallel processing ──
     worker_args = [
-        (idx, rec, str(images_dir), str(image_root), train_mode)
+        (idx, rec, str(images_dir), str(image_root), train_mode, shard_size)
         for idx, rec in enumerate(records)
     ]
     results: list[Optional[dict]] = [None] * total
@@ -540,6 +550,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="并行 worker 数（默认: CPU 核数）",
     )
     conv.add_argument(
+        "--shard-size", type=int, default=5000,
+        metavar="N",
+        help="每个子目录最多存放的图片数（默认: 5000；0 表示不分目录）",
+    )
+    conv.add_argument(
         "--log-path", type=Path, default=None,
         metavar="FILE",
         help="日志文件路径（可选）",
@@ -579,6 +594,7 @@ def main() -> None:
             inter_jsonl=args.inter_jsonl,
             train_mode=args.train_mode,
             workers=args.workers,
+            shard_size=args.shard_size,
             log_path=args.log_path,
         )
     else:
