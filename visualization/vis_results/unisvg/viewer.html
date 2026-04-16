@@ -12,247 +12,231 @@
     /* ── Toolbar ── */
     #toolbar {
       flex-shrink: 0;
-      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-      padding: 7px 16px;
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 6px 14px;
       background: #fff;
       border-bottom: 1px solid #dee2e6;
     }
     .app-title { font-weight: 700; font-size: 14px; color: #0d6efd; white-space: nowrap; }
-    .toolbar-sep { width: 1px; height: 22px; background: #dee2e6; flex-shrink: 0; }
-    .toolbar-label { color: #6c757d; white-space: nowrap; }
+    .sep { width: 1px; height: 20px; background: #dee2e6; flex-shrink: 0; }
+    .lbl { color: #6c757d; white-space: nowrap; font-size: 12px; }
     #toolbar select {
       padding: 3px 6px; border: 1px solid #ced4da; border-radius: 4px;
       font-size: 12px; background: #fff; cursor: pointer;
     }
-    .btn-page {
+    .btn-pg {
       padding: 3px 10px; border: 1px solid #ced4da; border-radius: 4px;
       background: #fff; cursor: pointer; font-size: 14px; line-height: 1;
     }
-    .btn-page:disabled { opacity: 0.4; cursor: default; }
-    .btn-page:not(:disabled):hover { background: #e9ecef; }
-    #page-info { font-size: 12px; white-space: nowrap; min-width: 90px; text-align: center; }
-    #row-count-badge {
+    .btn-pg:disabled { opacity: 0.38; cursor: default; }
+    .btn-pg:not(:disabled):hover { background: #e9ecef; }
+    #page-info { font-size: 12px; white-space: nowrap; min-width: 88px; text-align: center; }
+    #row-badge {
       font-size: 11px; padding: 2px 8px;
       background: #e9ecef; border-radius: 10px; white-space: nowrap;
     }
-    .btn-toggle {
-      padding: 3px 12px; border: 1px solid #ced4da; border-radius: 4px;
-      background: #fff; cursor: pointer; font-size: 12px; white-space: nowrap;
+    /* pill toggles */
+    .pill-group { display: flex; border: 1px solid #ced4da; border-radius: 5px; overflow: hidden; }
+    .pill-btn {
+      padding: 3px 11px; border: none; background: #fff;
+      cursor: pointer; font-size: 12px; color: #495057;
+      border-right: 1px solid #ced4da;
     }
-    .btn-toggle:hover { background: #e9ecef; }
-    .btn-toggle.on { background: #0d6efd; color: #fff; border-color: #0d6efd; }
+    .pill-btn:last-child { border-right: none; }
+    .pill-btn:hover:not(.active) { background: #f0f2f5; }
+    .pill-btn.active { background: #0d6efd; color: #fff; font-weight: 600; }
+    /* standalone toggle */
+    .btn-tog {
+      padding: 3px 11px; border: 1px solid #ced4da; border-radius: 4px;
+      background: #fff; cursor: pointer; font-size: 12px; color: #495057;
+    }
+    .btn-tog:hover { background: #e9ecef; }
+    .btn-tog.on { background: #0d6efd; color: #fff; border-color: #0d6efd; }
 
     /* ── Table container ── */
-    #table-outer {
-      flex: 1;
-      overflow: auto;
-      position: relative;
-      background: #f5f6f8;
-    }
+    #table-outer { flex: 1; overflow: auto; background: #f3f4f6; }
     #compare-table { min-width: fit-content; }
 
     /* ── Column headers (sticky top) ── */
     #col-headers {
       display: flex;
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      border-bottom: 2px solid #c8d0da;
-      background: #f8f9fa;
+      position: sticky; top: 0; z-index: 10;
+      border-bottom: 2px solid #bdc5d0;
     }
-
-    /* Index corner cell: sticky top + sticky left */
     .hdr-idx {
-      width: 58px; min-width: 58px; flex-shrink: 0;
+      width: 56px; min-width: 56px; flex-shrink: 0;
       position: sticky; left: 0; z-index: 20;
-      background: #e8edf5;
-      border-right: 2px solid #c8d0da;
-      padding: 8px 4px;
-      font-weight: 600; font-size: 11px; color: #6c757d;
+      background: #dde3ed;
+      border-right: 2px solid #bdc5d0;
       display: flex; align-items: center; justify-content: center;
+      font-weight: 600; font-size: 11px; color: #6c757d;
+      padding: 8px 4px;
     }
-
-    /* Column header cells */
     .hdr-col {
-      width: 380px; min-width: 380px; flex-shrink: 0;
-      padding: 9px 12px;
+      width: 370px; min-width: 370px; flex-shrink: 0;
+      padding: 8px 12px;
       background: #f8f9fa;
       border-right: 1px solid #dee2e6;
     }
-    .hdr-col.hdr-gt { background: #eef2ff; border-right: 2px solid #c8d0da; }
-    .col-name {
-      font-weight: 700; font-size: 13px; color: #212529; margin-bottom: 3px;
-    }
-    .col-name-gt { color: #3d5afe; }
-    .col-dir {
-      font-size: 11px; color: #6c757d; font-family: 'Consolas', monospace;
-      word-break: break-all; line-height: 1.4;
-    }
+    .hdr-col.hdr-gt { background: #eef2ff; border-right: 2px solid #bdc5d0; }
+    .hdr-name { font-weight: 700; font-size: 13px; color: #212529; margin-bottom: 2px; }
+    .hdr-name-gt { color: #3d5afe; }
+    .hdr-dir { font-size: 11px; color: #6c757d; font-family: monospace; word-break: break-all; line-height: 1.35; }
 
     /* ── Data rows ── */
-    .compare-row {
-      display: flex;
-      border-bottom: 3px solid #c8d0da;
-      background: #fff;
-    }
-
-    /* Row index cell (sticky left) */
+    .compare-row { display: flex; border-bottom: 3px solid #bdc5d0; background: #fff; }
     .cell-idx {
-      width: 58px; min-width: 58px; flex-shrink: 0;
+      width: 56px; min-width: 56px; flex-shrink: 0;
       position: sticky; left: 0; z-index: 5;
-      background: #f0f2f5;
-      border-right: 2px solid #c8d0da;
+      background: #eaecf0;
+      border-right: 2px solid #bdc5d0;
       display: flex; align-items: center; justify-content: center;
       font-size: 13px; font-weight: 700; color: #495057;
-      padding: 4px;
     }
 
-    /* Data cell */
+    /* ── Data cell ── */
     .cell-data {
-      width: 380px; min-width: 380px; flex-shrink: 0;
+      width: 370px; min-width: 370px; flex-shrink: 0;
       border-right: 1px solid #dee2e6;
       display: flex; flex-direction: column;
       background: #fff;
     }
-    .cell-data.cell-gt {
-      background: #fafbff;
-      border-right: 2px solid #c8d0da;
-    }
+    .cell-data.cell-gt { background: #fafbff; border-right: 2px solid #bdc5d0; }
 
-    /* ── Section: PNG preview ── */
-    .section-png {
-      height: 220px; flex-shrink: 0;
+    /* Cell header bar */
+    .cell-hdr {
+      display: flex; align-items: center; gap: 5px;
+      padding: 4px 8px;
       background: #f4f5f7;
       border-bottom: 1px solid #e2e6ea;
-      display: flex; align-items: center; justify-content: center;
-      overflow: hidden; padding: 6px;
-      position: relative;
+      flex-shrink: 0;
     }
-    .section-png img {
-      max-width: 100%; max-height: 206px;
-      width: auto; height: auto;
-      display: block; object-fit: contain;
-    }
-    .section-png .no-img {
-      color: #adb5bd; font-size: 12px; text-align: center; line-height: 1.8;
-    }
-    .section-label {
-      position: absolute; top: 4px; left: 6px;
-      font-size: 10px; color: #9da5b1; font-weight: 500;
-      background: rgba(244,245,247,0.85); padding: 1px 5px; border-radius: 3px;
-      pointer-events: none;
-    }
-
-    /* ── Section: SVG source code ── */
-    .section-code {
-      border-bottom: 1px solid #e2e6ea;
-      background: #fff;
-      overflow: hidden;
-      transition: max-height 0.18s ease;
-    }
-    .section-code.expanded { max-height: 240px; overflow-y: auto; }
-    .section-code.collapsed { max-height: 0 !important; border-bottom: none; }
-    .code-header {
-      display: flex; align-items: center; gap: 6px;
-      padding: 4px 8px;
-      background: #f8f9fa;
-      border-bottom: 1px solid #e9ecef;
-      position: sticky; top: 0; z-index: 1;
-    }
-    .code-filename {
+    .cell-fname {
       font-size: 11px; color: #6c757d; font-family: monospace; flex: 1;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    /* view-mode toggle inside cell header */
+    .cell-view-btns { display: flex; border: 1px solid #ced4da; border-radius: 4px; overflow: hidden; flex-shrink: 0; }
+    .cell-view-btn {
+      padding: 1px 7px; border: none; background: #fff;
+      cursor: pointer; font-size: 11px; color: #6c757d;
+      border-right: 1px solid #ced4da;
+    }
+    .cell-view-btn:last-child { border-right: none; }
+    .cell-view-btn:hover:not(.active) { background: #e9ecef; }
+    .cell-view-btn.active { background: #0d6efd; color: #fff; font-weight: 600; }
+    /* copy btn */
     .btn-copy {
-      padding: 1px 8px; border: 1px solid #ced4da; border-radius: 3px;
+      padding: 1px 7px; border: 1px solid #ced4da; border-radius: 3px;
       background: #fff; cursor: pointer; font-size: 11px; color: #495057;
-      white-space: nowrap; flex-shrink: 0;
+      flex-shrink: 0; white-space: nowrap;
     }
     .btn-copy:hover { background: #e9ecef; }
     .btn-copy.copied { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
+
+    /* View area (PNG or live SVG) */
+    .view-area {
+      height: 240px; flex-shrink: 0;
+      background: #f6f7f9;
+      border-bottom: 1px solid #e2e6ea;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden; padding: 6px; position: relative;
+    }
+    .view-area img {
+      max-width: 100%; max-height: 226px;
+      width: auto; height: auto;
+      display: block; object-fit: contain;
+    }
+    /* live SVG via Blob URL uses same <img> styling */
+    .view-area .no-content {
+      color: #adb5bd; font-size: 12px; text-align: center; line-height: 1.8;
+    }
+    /* spinning indicator while Blob img loads */
+    .live-loading {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #f6f7f9;
+    }
+    .mini-spin {
+      width: 22px; height: 22px;
+      border: 3px solid #dee2e6; border-top-color: #0d6efd;
+      border-radius: 50%; animation: spin .6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* SVG source code section */
+    .section-code {
+      overflow: hidden;
+      background: #fff;
+      transition: max-height .18s ease;
+    }
+    .section-code.expanded { max-height: 220px; overflow-y: auto; }
+    .section-code.collapsed { max-height: 0 !important; }
+    .code-bar {
+      display: flex; align-items: center;
+      padding: 3px 8px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e9ecef;
+      border-top: 1px solid #e9ecef;
+      position: sticky; top: 0; z-index: 1;
+    }
+    .code-bar-lbl { font-size: 10px; color: #9da5b0; flex: 1; }
     .code-pre {
       font-size: 11px; line-height: 1.55; font-family: 'Consolas', 'Monaco', monospace;
       white-space: pre-wrap; word-break: break-all;
-      margin: 0; padding: 7px 10px; color: #2d3748;
+      margin: 0; padding: 6px 10px; color: #2d3748;
     }
 
-    /* ── Section: Live SVG render ── */
-    .section-live {
-      flex-shrink: 0;
-      display: flex; flex-direction: column;
-    }
-    .section-live-header {
-      font-size: 10px; color: #6c757d; font-weight: 500;
-      padding: 3px 8px;
-      background: #f0fff4;
-      border-bottom: 1px solid #e2e6ea;
-      border-top: 1px solid #e2e6ea;
-    }
-    .section-live iframe {
-      width: 100%; height: 220px; border: none; display: block;
-      background: #fff;
-    }
-    .section-live .no-svg {
-      height: 220px;
-      display: flex; align-items: center; justify-content: center;
-      color: #adb5bd; font-size: 12px;
-      background: #fafafa;
-    }
-
-    /* ── Empty/error states ── */
-    .empty-state {
-      padding: 60px 24px; text-align: center;
-      color: #adb5bd; font-size: 14px; line-height: 1.8;
-    }
+    /* Empty / error */
+    .empty-state { padding: 60px 24px; text-align: center; color: #adb5bd; font-size: 14px; line-height: 1.8; }
     .empty-state-error { color: #dc3545; }
 
-    /* ── Loading overlay ── */
+    /* Loading overlay */
     #loading-overlay {
-      display: none;
-      position: fixed; inset: 0;
-      background: rgba(255,255,255,0.65);
-      z-index: 100;
+      display: none; position: fixed; inset: 0;
+      background: rgba(255,255,255,.6); z-index: 100;
       align-items: center; justify-content: center;
     }
     .spinner {
       width: 36px; height: 36px;
-      border: 4px solid #dee2e6;
-      border-top-color: #0d6efd;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
+      border: 4px solid #dee2e6; border-top-color: #0d6efd;
+      border-radius: 50%; animation: spin .7s linear infinite;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
 <div id="app">
 
-  <!-- ── Toolbar ── -->
+  <!-- Toolbar -->
   <div id="toolbar">
     <span class="app-title">UniSVG 结果对比</span>
-    <div class="toolbar-sep"></div>
+    <div class="sep"></div>
 
-    <button id="btn-prev" class="btn-page" title="上一页 (←)">‹</button>
+    <button id="btn-prev" class="btn-pg" title="上一页 (←)">‹</button>
     <span id="page-info">—</span>
-    <button id="btn-next" class="btn-page" title="下一页 (→)">›</button>
-    <span id="row-count-badge">0 行</span>
+    <button id="btn-next" class="btn-pg" title="下一页 (→)">›</button>
+    <span id="row-badge">0 行</span>
 
-    <div class="toolbar-sep"></div>
-
-    <span class="toolbar-label">每页:</span>
-    <select id="sel-page-size">
+    <div class="sep"></div>
+    <span class="lbl">每页:</span>
+    <select id="sel-size">
       <option value="5">5</option>
       <option value="10" selected>10</option>
       <option value="20">20</option>
     </select>
 
-    <div class="toolbar-sep"></div>
+    <div class="sep"></div>
+    <span class="lbl">全局视图:</span>
+    <div class="pill-group" id="global-view-btns">
+      <button class="pill-btn active" data-mode="png">PNG</button>
+      <button class="pill-btn"        data-mode="live">实时渲染</button>
+    </div>
 
-    <button id="btn-toggle-code" class="btn-toggle on" title="显示/隐藏 SVG 源码">SVG 源码</button>
-    <button id="btn-toggle-live" class="btn-toggle on" title="显示/隐藏实时渲染">实时渲染</button>
+    <div class="sep"></div>
+    <button id="btn-code" class="btn-tog on">SVG 源码</button>
   </div>
 
-  <!-- ── Table ── -->
+  <!-- Table -->
   <div id="table-outer">
     <div id="compare-table">
       <div id="col-headers"></div>
@@ -260,28 +244,26 @@
     </div>
   </div>
 
-  <!-- ── Loading overlay ── -->
   <div id="loading-overlay"><div class="spinner"></div></div>
-
 </div>
 
 <script>
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 // State
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 const S = {
-  columns:   [],    // [{label, dir}]  from /api/info
-  rows:      [],    // current page rows from /api/rows
-  page:      0,
-  pageSize:  10,
-  totalRows: 0,
-  showCode:  true,
-  showLive:  true,
+  columns:    [],
+  rows:       [],
+  page:       0,
+  pageSize:   10,
+  totalRows:  0,
+  globalView: 'png',   // 'png' | 'live'  — current global default
+  showCode:   true,
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// Bootstrap
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════════════════════════
 async function init() {
   try {
     const info = await fetchJSON('/api/info');
@@ -294,148 +276,178 @@ async function init() {
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// API helpers
-// ════════════════════════════════════════════════════════════════════════════
 async function fetchJSON(url, opts) {
   const r = await fetch(url, opts || {});
   if (!r.ok) {
-    const body = await r.json().catch(() => ({ error: r.statusText }));
-    throw new Error(body.error || r.statusText);
+    const b = await r.json().catch(() => ({ error: r.statusText }));
+    throw new Error(b.error || r.statusText);
   }
   return r.json();
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Page loading
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// Load page
+// ═══════════════════════════════════════════════════════════════
 async function loadPage() {
   setLoading(true);
   try {
-    const data = await fetchJSON(`/api/rows?page=${S.page}&size=${S.pageSize}`);
-    S.rows      = data.rows;
-    S.totalRows = data.total_rows;
+    const d = await fetchJSON(`/api/rows?page=${S.page}&size=${S.pageSize}`);
+    S.rows      = d.rows;
+    S.totalRows = d.total_rows;
     renderRows();
     updatePagination();
   } catch (err) {
-    showFatalError('加载数据失败: ' + err.message);
+    showFatalError('加载失败: ' + err.message);
   } finally {
     setLoading(false);
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Render: column headers
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// Render headers
+// ═══════════════════════════════════════════════════════════════
 function renderHeaders() {
   const hdr = document.getElementById('col-headers');
   hdr.innerHTML = '';
 
-  // Index corner
-  const corner = el('div', 'hdr-idx');
+  const corner = mkEl('div', 'hdr-idx');
   corner.textContent = '#';
   hdr.appendChild(corner);
 
-  // GT column header (using dirs[0] path)
-  const gtHdr = el('div', 'hdr-col hdr-gt');
-  gtHdr.innerHTML = `
-    <div class="col-name col-name-gt">GT</div>
-    <div class="col-dir" title="${escHtml(S.columns[0]?.dir || '')}">
-      ${escHtml(S.columns[0]?.dir || '—')}
-    </div>
-  `;
-  hdr.appendChild(gtHdr);
+  // GT header
+  const gtH = mkEl('div', 'hdr-col hdr-gt');
+  gtH.innerHTML = `<div class="hdr-name hdr-name-gt">GT</div>
+    <div class="hdr-dir" title="${esc(S.columns[0]?.dir || '')}">${esc(S.columns[0]?.dir || '—')}</div>`;
+  hdr.appendChild(gtH);
 
-  // Gen column headers (one per experiment dir)
+  // Gen headers
   S.columns.forEach((col, i) => {
-    const cell = el('div', 'hdr-col');
-    cell.innerHTML = `
-      <div class="col-name">Exp ${i + 1}</div>
-      <div class="col-dir" title="${escHtml(col.dir)}">${escHtml(col.label)}</div>
-    `;
-    hdr.appendChild(cell);
+    const h = mkEl('div', 'hdr-col');
+    h.innerHTML = `<div class="hdr-name">Exp ${i + 1}</div>
+      <div class="hdr-dir" title="${esc(col.dir)}">${esc(col.label)}</div>`;
+    hdr.appendChild(h);
   });
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Render: data rows
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// Render rows
+// ═══════════════════════════════════════════════════════════════
 function renderRows() {
   const tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
-
   if (!S.rows.length) {
     tbody.innerHTML = `<div class="empty-state">暂无数据（共 ${S.totalRows} 行）</div>`;
     return;
   }
-
   const frag = document.createDocumentFragment();
   S.rows.forEach(row => {
-    const rowEl = el('div', 'compare-row');
+    const rowEl = mkEl('div', 'compare-row');
 
-    // Row index (sticky left)
-    const idxEl = el('div', 'cell-idx');
+    const idxEl = mkEl('div', 'cell-idx');
     idxEl.textContent = row.index;
     rowEl.appendChild(idxEl);
 
-    // GT cell
-    rowEl.appendChild(buildCell(row.gt, row.index, 'gt', 0));
-
-    // Gen cells
-    row.gens.forEach((gen, ei) => {
-      rowEl.appendChild(buildCell(gen, row.index, 'gen', ei));
-    });
+    rowEl.appendChild(buildCell(row.gt,  row.index, 'gt',  0));
+    row.gens.forEach((gen, ei) => rowEl.appendChild(buildCell(gen, row.index, 'gen', ei)));
 
     frag.appendChild(rowEl);
   });
   tbody.appendChild(frag);
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 // Build a single data cell
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 function buildCell(data, index, role, expIdx) {
   const isGt = role === 'gt';
-  const cellEl = el('div', 'cell-data' + (isGt ? ' cell-gt' : ''));
-  const filename = isGt ? `gt_${index}` : `gen_${index}`;
+  const fname = isGt ? `gt_${index}` : `gen_${index}`;
+  const pngUrl = isGt
+    ? `/api/image?index=${index}&role=gt`
+    : `/api/image?index=${index}&role=gen&exp=${expIdx}`;
 
-  // ── 1. PNG preview ──
-  const pngSection = el('div', 'section-png');
-  const pngLabel = el('span', 'section-label');
-  pngLabel.textContent = filename + '.png';
-  pngSection.appendChild(pngLabel);
+  const cellEl = mkEl('div', 'cell-data' + (isGt ? ' cell-gt' : ''));
 
-  if (data.has_png) {
-    const imgUrl = isGt
-      ? `/api/image?index=${index}&role=gt`
-      : `/api/image?index=${index}&role=gen&exp=${expIdx}`;
-    const img = document.createElement('img');
-    img.src = imgUrl;
-    img.alt = filename + '.png';
-    img.loading = 'lazy';
-    pngSection.appendChild(img);
-  } else {
-    const noImg = el('div', 'no-img');
-    noImg.textContent = '无预渲染图片';
-    pngSection.appendChild(noImg);
-  }
-  cellEl.appendChild(pngSection);
+  // ── Cell header ──
+  const hdr = mkEl('div', 'cell-hdr');
 
-  // ── 2. SVG source code ──
-  const codeSection = el('div', 'section-code ' + (S.showCode ? 'expanded' : 'collapsed'));
+  const fnameEl = mkEl('span', 'cell-fname');
+  fnameEl.textContent = fname + '.svg';
+  fnameEl.title = fname + '.svg';
 
-  const codeHeader = el('div', 'code-header');
-  const codeFilename = el('span', 'code-filename');
-  codeFilename.textContent = filename + '.svg';
-  codeFilename.title = filename + '.svg';
+  // Per-cell PNG ↔ 实时渲染 buttons
+  const viewBtns = mkEl('div', 'cell-view-btns');
+  const btnPng  = mkEl('button', 'cell-view-btn' + (S.globalView === 'png'  ? ' active' : ''));
+  const btnLive = mkEl('button', 'cell-view-btn' + (S.globalView === 'live' ? ' active' : ''));
+  btnPng.textContent  = 'PNG';
+  btnLive.textContent = '实时';
+  viewBtns.appendChild(btnPng);
+  viewBtns.appendChild(btnLive);
 
-  const btnCopy = el('button', 'btn-copy');
+  const btnCopy = mkEl('button', 'btn-copy');
   btnCopy.textContent = '复制';
   btnCopy.addEventListener('click', () => copyText(data.svg_code || '', btnCopy));
 
-  codeHeader.appendChild(codeFilename);
-  codeHeader.appendChild(btnCopy);
-  codeSection.appendChild(codeHeader);
+  hdr.appendChild(fnameEl);
+  hdr.appendChild(viewBtns);
+  hdr.appendChild(btnCopy);
+  cellEl.appendChild(hdr);
+
+  // ── View area ──
+  const viewArea = mkEl('div', 'view-area');
+  cellEl.appendChild(viewArea);
+
+  // Internal helpers to switch view modes
+  function showPng() {
+    btnPng.classList.add('active');
+    btnLive.classList.remove('active');
+    viewArea.innerHTML = '';
+    if (data.has_png) {
+      const img = document.createElement('img');
+      img.src = pngUrl;
+      img.alt = fname + '.png';
+      img.loading = 'lazy';
+      viewArea.appendChild(img);
+    } else {
+      const d = mkEl('div', 'no-content');
+      d.textContent = '无预渲染图片';
+      viewArea.appendChild(d);
+    }
+    cellEl.dataset.viewMode = 'png';
+  }
+
+  function showLive() {
+    btnPng.classList.remove('active');
+    btnLive.classList.add('active');
+    viewArea.innerHTML = '';
+    if (!data.svg_code || !data.svg_code.trim()) {
+      const d = mkEl('div', 'no-content');
+      d.textContent = '无 SVG 内容';
+      viewArea.appendChild(d);
+    } else {
+      // Show spinner, then render via Blob URL
+      const spin = mkEl('div', 'live-loading');
+      spin.innerHTML = '<div class="mini-spin"></div>';
+      viewArea.appendChild(spin);
+      renderSvgBlob(viewArea, data.svg_code, spin);
+    }
+    cellEl.dataset.viewMode = 'live';
+  }
+
+  // Wire buttons
+  btnPng.addEventListener('click',  showPng);
+  btnLive.addEventListener('click', showLive);
+
+  // Initial render based on global mode
+  if (S.globalView === 'live') showLive(); else showPng();
+
+  // ── SVG source code ──
+  const codeSection = mkEl('div', 'section-code ' + (S.showCode ? 'expanded' : 'collapsed'));
+
+  const codeBar = mkEl('div', 'code-bar');
+  const codeLbl = mkEl('span', 'code-bar-lbl');
+  codeLbl.textContent = fname + '.svg — 源码';
+  codeBar.appendChild(codeLbl);
+  codeSection.appendChild(codeBar);
 
   const pre = document.createElement('pre');
   pre.className = 'code-pre';
@@ -443,44 +455,76 @@ function buildCell(data, index, role, expIdx) {
   codeSection.appendChild(pre);
 
   cellEl.appendChild(codeSection);
-
-  // ── 3. Live SVG render ──
-  const liveSection = el('div', 'section-live');
-  liveSection.style.display = S.showLive ? '' : 'none';
-
-  const liveHeader = el('div', 'section-live-header');
-  liveHeader.textContent = '实时渲染 · ' + filename + '.svg';
-  liveSection.appendChild(liveHeader);
-
-  if (data.svg_code && data.svg_code.trim()) {
-    const frame = document.createElement('iframe');
-    frame.setAttribute('sandbox', 'allow-scripts');
-    frame.srcdoc = buildSvgPage(data.svg_code);
-    liveSection.appendChild(frame);
-  } else {
-    const noSvg = el('div', 'no-svg');
-    noSvg.textContent = '无 SVG 内容';
-    liveSection.appendChild(noSvg);
-  }
-
-  cellEl.appendChild(liveSection);
   return cellEl;
 }
 
-// Build the srcdoc HTML page that renders the SVG centered
-function buildSvgPage(svgCode) {
-  return '<!DOCTYPE html><html><head><style>' +
-    'html,body{margin:0;padding:6px;background:#fff;' +
-    'display:flex;align-items:center;justify-content:center;' +
-    'min-height:100%;box-sizing:border-box;}' +
-    'svg{max-width:100%;max-height:206px;width:auto;height:auto;}' +
-    '</style></head><body>' + svgCode + '</body></html>';
+// ═══════════════════════════════════════════════════════════════
+// Render SVG via Blob URL → <img>  (falls back to iframe)
+// ═══════════════════════════════════════════════════════════════
+function renderSvgBlob(container, svgCode, spinnerEl) {
+  const blob = new Blob([svgCode], { type: 'image/svg+xml;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const img  = document.createElement('img');
+  img.alt    = 'SVG 实时渲染';
+  img.style.cssText = 'max-width:100%;max-height:226px;width:auto;height:auto;display:block;object-fit:contain;';
+
+  img.addEventListener('load', () => {
+    URL.revokeObjectURL(url);
+    if (spinnerEl && spinnerEl.parentNode === container) container.removeChild(spinnerEl);
+    container.appendChild(img);
+  }, { once: true });
+
+  img.addEventListener('error', () => {
+    URL.revokeObjectURL(url);
+    if (spinnerEl && spinnerEl.parentNode === container) container.removeChild(spinnerEl);
+    // Fallback: iframe with srcdoc (escape SVG code for safe embedding)
+    renderSvgIframe(container, svgCode);
+  }, { once: true });
+
+  img.src = url;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Toggle: code / live render visibility
-// ════════════════════════════════════════════════════════════════════════════
-document.getElementById('btn-toggle-code').addEventListener('click', function () {
+function renderSvgIframe(container, svgCode) {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', 'allow-scripts');
+  // Encode SVG as data URI to avoid srcdoc injection issues
+  const encoded = encodeURIComponent(
+    '<!DOCTYPE html><html><head><style>' +
+    'html,body{margin:0;padding:6px;background:#fff;display:flex;align-items:center;justify-content:center;height:100%;box-sizing:border-box;}' +
+    'svg{max-width:100%;max-height:220px;width:auto;height:auto;}' +
+    '</style></head><body>' + svgCode + '</body></html>'
+  );
+  frame.src = 'data:text/html;charset=utf-8,' + encoded;
+  frame.style.cssText = 'width:100%;height:226px;border:none;display:block;';
+  container.appendChild(frame);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Global view toggle (PNG ↔ 实时渲染)
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('global-view-btns').addEventListener('click', function (e) {
+  const btn = e.target.closest('.pill-btn');
+  if (!btn) return;
+  const mode = btn.dataset.mode;
+  if (mode === S.globalView) return;
+  S.globalView = mode;
+
+  // Update pill UI
+  this.querySelectorAll('.pill-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+
+  // Switch every cell that exists
+  document.querySelectorAll('.cell-view-btn').forEach(b => {
+    const isPng  = b.textContent === 'PNG';
+    const isLive = b.textContent === '实时';
+    const shouldBeActive = (mode === 'png' && isPng) || (mode === 'live' && isLive);
+    if (shouldBeActive && !b.classList.contains('active')) b.click();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// SVG source code toggle
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btn-code').addEventListener('click', function () {
   S.showCode = !S.showCode;
   this.classList.toggle('on', S.showCode);
   document.querySelectorAll('.section-code').forEach(sec => {
@@ -489,92 +533,64 @@ document.getElementById('btn-toggle-code').addEventListener('click', function ()
   });
 });
 
-document.getElementById('btn-toggle-live').addEventListener('click', function () {
-  S.showLive = !S.showLive;
-  this.classList.toggle('on', S.showLive);
-  document.querySelectorAll('.section-live').forEach(sec => {
-    sec.style.display = S.showLive ? '' : 'none';
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 // Pagination
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 function updatePagination() {
-  const totalPages = Math.max(1, Math.ceil(S.totalRows / S.pageSize));
-  document.getElementById('page-info').textContent =
-    `第 ${S.page + 1} / ${totalPages} 页`;
-  document.getElementById('row-count-badge').textContent =
-    `共 ${S.totalRows.toLocaleString()} 行`;
+  const tot = Math.max(1, Math.ceil(S.totalRows / S.pageSize));
+  document.getElementById('page-info').textContent = `第 ${S.page + 1} / ${tot} 页`;
+  document.getElementById('row-badge').textContent  = `共 ${S.totalRows.toLocaleString()} 行`;
   document.getElementById('btn-prev').disabled = (S.page === 0);
-  document.getElementById('btn-next').disabled = (S.page >= totalPages - 1);
+  document.getElementById('btn-next').disabled = (S.page >= tot - 1);
 }
 
 document.getElementById('btn-prev').addEventListener('click', async () => {
   if (S.page > 0) { S.page--; await loadPage(); }
 });
 document.getElementById('btn-next').addEventListener('click', async () => {
-  const total = Math.ceil(S.totalRows / S.pageSize);
-  if (S.page < total - 1) { S.page++; await loadPage(); }
+  const tot = Math.ceil(S.totalRows / S.pageSize);
+  if (S.page < tot - 1) { S.page++; await loadPage(); }
 });
-document.getElementById('sel-page-size').addEventListener('change', async function () {
-  S.pageSize = parseInt(this.value);
-  S.page = 0;
-  await loadPage();
+document.getElementById('sel-size').addEventListener('change', async function () {
+  S.pageSize = parseInt(this.value); S.page = 0; await loadPage();
 });
 
-// Keyboard navigation (←/→)
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  const total = Math.ceil(S.totalRows / S.pageSize);
-  if ((e.key === 'ArrowLeft' || e.key === 'ArrowUp') && S.page > 0) {
-    e.preventDefault(); S.page--; loadPage();
-  } else if ((e.key === 'ArrowRight' || e.key === 'ArrowDown') && S.page < total - 1) {
-    e.preventDefault(); S.page++; loadPage();
-  }
+  const tot = Math.ceil(S.totalRows / S.pageSize);
+  if ((e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   && S.page > 0)       { e.preventDefault(); S.page--; loadPage(); }
+  if ((e.key === 'ArrowRight' || e.key === 'ArrowDown') && S.page < tot - 1) { e.preventDefault(); S.page++; loadPage(); }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 // Utilities
-// ════════════════════════════════════════════════════════════════════════════
-function el(tag, cls) {
+// ═══════════════════════════════════════════════════════════════
+function mkEl(tag, cls) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
   return e;
 }
-
-function escHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
-
-function setLoading(show) {
-  document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none';
+function setLoading(v) {
+  document.getElementById('loading-overlay').style.display = v ? 'flex' : 'none';
 }
-
 function showFatalError(msg) {
   document.getElementById('table-body').innerHTML =
-    `<div class="empty-state empty-state-error">${escHtml(msg)}</div>`;
+    `<div class="empty-state empty-state-error">${esc(msg)}</div>`;
 }
-
 function copyText(text, btn) {
-  navigator.clipboard.writeText(text || '').then(() => {
-    btn.textContent = '已复制 ✓';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = '复制';
-      btn.classList.remove('copied');
-    }, 1600);
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '已复制 ✓'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 1600);
   }).catch(() => {
     btn.textContent = '失败';
     setTimeout(() => { btn.textContent = '复制'; }, 1200);
   });
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Start
-// ════════════════════════════════════════════════════════════════════════════
+// ─── Start ───
 init();
 </script>
 </body>
