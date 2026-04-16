@@ -464,6 +464,16 @@ function buildCell(data, index, role, expIdx) {
 // Render SVG via Blob URL → <img>  (falls back to iframe)
 // ═══════════════════════════════════════════════════════════════
 function renderSvgBlob(container, svgCode, spinnerEl) {
+  // Pre-validate: duplicate attributes or other XML errors make browsers
+  // silently render a blank image (load fires instead of error), so we
+  // detect this up-front and skip straight to the iframe fallback.
+  const parsed = new DOMParser().parseFromString(svgCode, 'image/svg+xml');
+  if (parsed.querySelector('parsererror')) {
+    if (spinnerEl && spinnerEl.parentNode === container) container.removeChild(spinnerEl);
+    renderSvgIframe(container, svgCode);
+    return;
+  }
+
   const blob = new Blob([svgCode], { type: 'image/svg+xml;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
   const img  = document.createElement('img');
