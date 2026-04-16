@@ -223,6 +223,8 @@
       <option value="5">5</option>
       <option value="10" selected>10</option>
       <option value="20">20</option>
+      <option value="50">50</option>
+      <option value="100">100</option>
     </select>
 
     <div class="sep"></div>
@@ -324,7 +326,7 @@ function renderHeaders() {
   S.columns.forEach((col, i) => {
     const h = mkEl('div', 'hdr-col');
     h.innerHTML = `<div class="hdr-name">Exp ${i + 1}</div>
-      <div class="hdr-dir" title="${esc(col.dir)}">${esc(col.label)}</div>`;
+      <div class="hdr-dir">${esc(col.dir)}</div>`;
     hdr.appendChild(h);
   });
 }

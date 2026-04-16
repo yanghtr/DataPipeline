@@ -109,7 +109,7 @@ def api_info():
 @app.route("/api/rows")
 def api_rows():
     page = max(0, int(request.args.get("page", 0)))
-    size = max(1, min(100, int(request.args.get("size", 10))))
+    size = max(1, min(200, int(request.args.get("size", 10))))
     start = page * size
     page_indices = _indices[start: start + size]
     rows = [_build_row(i) for i in page_indices]
