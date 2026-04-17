@@ -18,6 +18,8 @@ UniSVG 实验结果多列对比可视化工具。
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -31,6 +33,11 @@ app = Flask(__name__)
 
 _dirs: list[Path] = []    # 实验结果目录（已 resolve 为绝对路径）
 _indices: list[int] = []  # 从 dirs[0] 扫描到的 GT index 列表（排序后）
+_scores: list[list[dict | None]] = []  # _scores[dir_idx][index] = details 行或 None
+_score_fields: list[str] = []          # 检测到的标量评测字段（有序）
+
+# details.jsonl 中识别的标量字段（按此顺序展示）
+CANDIDATE_SCORE_FIELDS = ["ssim", "lpips", "clip_score", "low-level", "isvgen_score"]
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -51,6 +58,34 @@ def _make_label(d: Path) -> str:
     return "/".join(parts[-2:]) if len(parts) >= 2 else d.name
 
 
+def _load_scores(d: Path) -> list[dict | None]:
+    """读取 details.jsonl；第 i 行（0-based）对应 gen_{i}。"""
+    p = d / "details.jsonl"
+    if not p.exists():
+        return []
+    result: list[dict | None] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            result.append(None)
+            continue
+        try:
+            result.append(json.loads(stripped))
+        except json.JSONDecodeError:
+            result.append(None)
+    return result
+
+
+def _get_score_entry(dir_idx: int, index: int) -> dict | None:
+    """返回 dir_idx 实验中 gen_{index} 的评测条目，不存在则返回 None。"""
+    if dir_idx >= len(_scores):
+        return None
+    s = _scores[dir_idx]
+    if index >= len(s):
+        return None
+    return s[index]
+
+
 def _build_row(index: int) -> dict:
     """读取指定 index 的 GT 和各实验 gen 数据，构建行字典。"""
     gt_dir = _dirs[0]
@@ -68,7 +103,7 @@ def _build_row(index: int) -> dict:
     }
 
     gens: list[dict] = []
-    for d in _dirs:
+    for ei, d in enumerate(_dirs):
         gen_svg_path = d / f"gen_{index}.svg"
         gen_png_path = d / f"gen_{index}.png"
         try:
@@ -78,6 +113,7 @@ def _build_row(index: int) -> dict:
         gens.append({
             "svg_code": gen_svg_code,
             "has_png": gen_png_path.exists(),
+            "scores": _get_score_entry(ei, index),
         })
 
     return {"index": index, "gt": gt, "gens": gens}
@@ -99,19 +135,56 @@ def route_index():
 def api_info():
     return jsonify({
         "total_rows": len(_indices),
+        "score_fields": _score_fields,
         "columns": [
-            {"label": _make_label(d), "dir": str(d)}
-            for d in _dirs
+            {
+                "label": _make_label(d),
+                "dir": str(d),
+                "has_scores": bool(_scores[i]) if i < len(_scores) else False,
+            }
+            for i, d in enumerate(_dirs)
         ],
     })
 
 
 @app.route("/api/rows")
 def api_rows():
-    page = max(0, int(request.args.get("page", 0)))
-    size = max(1, min(200, int(request.args.get("size", 10))))
+    page       = max(0, int(request.args.get("page", 0)))
+    size       = max(1, min(200, int(request.args.get("size", 10))))
+    sort_exp   = request.args.get("sort_exp",   type=int, default=None)
+    sort_field = request.args.get("sort_field", default=None)
+    sort_dir   = request.args.get("sort_dir",   default="desc")
+
+    indices = _indices[:]
+
+    if (
+        sort_exp is not None
+        and sort_field
+        and sort_field in _score_fields
+        and 0 <= sort_exp < len(_scores)
+    ):
+        dir_scores = _scores[sort_exp]
+
+        def _val(idx: int) -> float | None:
+            if idx >= len(dir_scores) or dir_scores[idx] is None:
+                return None
+            entry = dir_scores[idx]
+            if entry.get("status") != "success":
+                return None
+            v = entry.get(sort_field)
+            if not isinstance(v, (int, float)):
+                return None
+            fv = float(v)
+            return None if math.isnan(fv) else fv
+
+        reverse  = (sort_dir != "asc")
+        success  = [i for i in indices if _val(i) is not None]
+        no_score = [i for i in indices if _val(i) is None]
+        success.sort(key=_val, reverse=reverse)
+        indices = success + no_score
+
     start = page * size
-    page_indices = _indices[start: start + size]
+    page_indices = indices[start: start + size]
     rows = [_build_row(i) for i in page_indices]
     return jsonify({
         "page": page,
@@ -199,8 +272,21 @@ def main() -> None:
             sys.exit(1)
         _dirs.append(d)
         logger.info(f"注册目录: {d}")
+        _scores.append(_load_scores(d))
 
-    global _indices
+    # 按 CANDIDATE_SCORE_FIELDS 顺序检测各目录中实际存在的字段
+    global _indices, _score_fields
+    seen: set[str] = set()
+    for dir_scores in _scores:
+        for entry in dir_scores:
+            if entry:
+                for f in CANDIDATE_SCORE_FIELDS:
+                    if f in entry and f not in seen:
+                        seen.add(f)
+                        _score_fields.append(f)
+    if _score_fields:
+        logger.info(f"检测到评测字段: {_score_fields}")
+
     _indices = _scan_gt_indices(_dirs[0])
 
     if not _indices:

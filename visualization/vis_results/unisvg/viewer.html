@@ -53,6 +53,11 @@
     .btn-tog:hover { background: #e9ecef; }
     .btn-tog.on { background: #0d6efd; color: #fff; border-color: #0d6efd; }
 
+    /* ── Sort controls (hidden until scores load) ── */
+    .sort-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .sort-wrap.hidden { display: none; }
+    #sel-sort-field:disabled, #sel-sort-exp:disabled { opacity: 0.45; cursor: default; }
+
     /* ── Table container ── */
     #table-outer { flex: 1; overflow: auto; background: #f3f4f6; }
     #compare-table { min-width: fit-content; }
@@ -134,6 +139,27 @@
     .btn-copy:hover { background: #e9ecef; }
     .btn-copy.copied { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
 
+    /* ── Score bar ── */
+    .score-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+      padding: 4px 8px;
+      background: #f9fafb;
+      border-bottom: 1px solid #e9ecef;
+      font-size: 11px; flex-shrink: 0;
+      min-height: 24px;
+    }
+    .score-status {
+      font-weight: 600; padding: 1px 7px; border-radius: 3px;
+      white-space: nowrap; font-size: 10px; letter-spacing: 0.02em;
+    }
+    .score-status.s-ok   { background: #d1fae5; color: #065f46; }
+    .score-status.s-fail { background: #fee2e2; color: #991b1b; }
+    .score-item { color: #6c757d; white-space: nowrap; }
+    .score-item b { color: #374151; font-weight: 600; }
+    .score-item.sort-hi b { color: #0d6efd; font-weight: 700; }
+    .score-item.sort-hi { color: #3b82f6; }
+    .score-no-data { color: #adb5bd; font-size: 10px; }
+
     /* View area (PNG or live SVG) */
     .view-area {
       height: 240px; flex-shrink: 0;
@@ -147,11 +173,9 @@
       width: auto; height: auto;
       display: block; object-fit: contain;
     }
-    /* live SVG via Blob URL uses same <img> styling */
     .view-area .no-content {
       color: #adb5bd; font-size: 12px; text-align: center; line-height: 1.8;
     }
-    /* spinning indicator while Blob img loads */
     .live-loading {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
@@ -236,6 +260,21 @@
 
     <div class="sep"></div>
     <button id="btn-code" class="btn-tog on">SVG 源码</button>
+
+    <!-- Sort controls (hidden until score_fields arrive) -->
+    <div class="sort-wrap hidden" id="sort-wrap">
+      <div class="sep"></div>
+      <span class="lbl">排序:</span>
+      <select id="sel-sort-exp" title="选择用于排序的实验">
+        <option value="">— 不排序 —</option>
+      </select>
+      <select id="sel-sort-field" disabled title="排序字段">
+      </select>
+      <div class="pill-group" id="sort-dir-btns">
+        <button class="pill-btn active" data-dir="desc">↓ 高→低</button>
+        <button class="pill-btn"        data-dir="asc" >↑ 低→高</button>
+      </div>
+    </div>
   </div>
 
   <!-- Table -->
@@ -254,13 +293,18 @@
 // State
 // ═══════════════════════════════════════════════════════════════
 const S = {
-  columns:    [],
-  rows:       [],
-  page:       0,
-  pageSize:   10,
-  totalRows:  0,
-  globalView: 'png',   // 'png' | 'live'  — current global default
-  showCode:   true,
+  columns:     [],
+  rows:        [],
+  page:        0,
+  pageSize:    10,
+  totalRows:   0,
+  globalView:  'png',   // 'png' | 'live'
+  showCode:    true,
+  // scores / sort
+  scoreFields: [],      // string[]  — from /api/info
+  sortExp:     '',      // '' | '0' | '1' | ...  (dir index as string)
+  sortField:   '',      // '' | field name
+  sortDir:     'desc',  // 'asc' | 'desc'
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -268,14 +312,73 @@ const S = {
 // ═══════════════════════════════════════════════════════════════
 async function init() {
   try {
-    const info = await fetchJSON('/api/info');
-    S.columns   = info.columns;
-    S.totalRows = info.total_rows;
+    const info     = await fetchJSON('/api/info');
+    S.columns      = info.columns;
+    S.totalRows    = info.total_rows;
+    S.scoreFields  = info.score_fields || [];
     renderHeaders();
+    initSortControls();
     await loadPage();
   } catch (err) {
     showFatalError('初始化失败: ' + err.message);
   }
+}
+
+function initSortControls() {
+  if (!S.scoreFields.length) return;
+
+  // Populate experiment selector (only dirs with scores)
+  const expSel = document.getElementById('sel-sort-exp');
+  S.columns.forEach((col, i) => {
+    if (!col.has_scores) return;
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = `Exp ${i + 1} — ${col.label}`;
+    expSel.appendChild(opt);
+  });
+
+  // Populate field selector
+  const fieldSel = document.getElementById('sel-sort-field');
+  S.scoreFields.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = f;
+    fieldSel.appendChild(opt);
+  });
+  if (S.scoreFields.length) {
+    S.sortField = S.scoreFields[0];
+    fieldSel.value = S.sortField;
+  }
+
+  // Show the sort section
+  document.getElementById('sort-wrap').classList.remove('hidden');
+
+  // Wire events
+  expSel.addEventListener('change', async function () {
+    S.sortExp = this.value;
+    document.getElementById('sel-sort-field').disabled = !S.sortExp;
+    document.getElementById('sort-dir-btns').querySelectorAll('.pill-btn')
+      .forEach(b => b.disabled = !S.sortExp);
+    S.page = 0;
+    await loadPage();
+  });
+
+  fieldSel.addEventListener('change', async function () {
+    S.sortField = this.value;
+    S.page = 0;
+    await loadPage();
+  });
+
+  document.getElementById('sort-dir-btns').addEventListener('click', async function (e) {
+    const btn = e.target.closest('.pill-btn');
+    if (!btn || !S.sortExp) return;
+    const dir = btn.dataset.dir;
+    if (dir === S.sortDir) return;
+    S.sortDir = dir;
+    this.querySelectorAll('.pill-btn').forEach(b => b.classList.toggle('active', b.dataset.dir === dir));
+    S.page = 0;
+    await loadPage();
+  });
 }
 
 async function fetchJSON(url, opts) {
@@ -288,12 +391,23 @@ async function fetchJSON(url, opts) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// Build rows URL (includes sort params when active)
+// ═══════════════════════════════════════════════════════════════
+function buildRowsUrl() {
+  let url = `/api/rows?page=${S.page}&size=${S.pageSize}`;
+  if (S.sortExp !== '' && S.sortField) {
+    url += `&sort_exp=${S.sortExp}&sort_field=${encodeURIComponent(S.sortField)}&sort_dir=${S.sortDir}`;
+  }
+  return url;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Load page
 // ═══════════════════════════════════════════════════════════════
 async function loadPage() {
   setLoading(true);
   try {
-    const d = await fetchJSON(`/api/rows?page=${S.page}&size=${S.pageSize}`);
+    const d = await fetchJSON(buildRowsUrl());
     S.rows      = d.rows;
     S.totalRows = d.total_rows;
     renderRows();
@@ -325,7 +439,10 @@ function renderHeaders() {
   // Gen headers
   S.columns.forEach((col, i) => {
     const h = mkEl('div', 'hdr-col');
-    h.innerHTML = `<div class="hdr-name">Exp ${i + 1}</div>
+    const scoreTag = col.has_scores
+      ? `<span style="font-size:10px;color:#6c757d;font-weight:400;margin-left:5px;">评测</span>`
+      : '';
+    h.innerHTML = `<div class="hdr-name">Exp ${i + 1}${scoreTag}</div>
       <div class="hdr-dir">${esc(col.dir)}</div>`;
     hdr.appendChild(h);
   });
@@ -358,11 +475,47 @@ function renderRows() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// Build score bar element (gen cells only)
+// ═══════════════════════════════════════════════════════════════
+function buildScoreBar(scores) {
+  const bar = mkEl('div', 'score-bar');
+
+  if (!scores) {
+    const nd = mkEl('span', 'score-no-data');
+    nd.textContent = '无评测数据';
+    bar.appendChild(nd);
+    return bar;
+  }
+
+  const status = scores.status || 'unknown';
+  const isOk   = status === 'success';
+  const badge  = mkEl('span', 'score-status ' + (isOk ? 's-ok' : 's-fail'));
+  badge.textContent = isOk ? '✓ ' + status : '✗ ' + status;
+  bar.appendChild(badge);
+
+  if (isOk && S.scoreFields.length) {
+    S.scoreFields.forEach(field => {
+      const val = scores[field];
+      if (val === undefined || val === null) return;
+      const isSort = S.sortExp !== '' && field === S.sortField;
+      const item   = mkEl('span', 'score-item' + (isSort ? ' sort-hi' : ''));
+      const fmtVal = typeof val === 'number'
+        ? (Number.isInteger(val) ? String(val) : val.toFixed(4))
+        : String(val);
+      item.innerHTML = `${esc(field)}: <b>${esc(fmtVal)}</b>`;
+      bar.appendChild(item);
+    });
+  }
+
+  return bar;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Build a single data cell
 // ═══════════════════════════════════════════════════════════════
 function buildCell(data, index, role, expIdx) {
-  const isGt = role === 'gt';
-  const fname = isGt ? `gt_${index}` : `gen_${index}`;
+  const isGt   = role === 'gt';
+  const fname  = isGt ? `gt_${index}` : `gen_${index}`;
   const pngUrl = isGt
     ? `/api/image?index=${index}&role=gt`
     : `/api/image?index=${index}&role=gen&exp=${expIdx}`;
@@ -376,10 +529,9 @@ function buildCell(data, index, role, expIdx) {
   fnameEl.textContent = fname + '.svg';
   fnameEl.title = fname + '.svg';
 
-  // Per-cell PNG ↔ 实时渲染 buttons
   const viewBtns = mkEl('div', 'cell-view-btns');
-  const btnPng  = mkEl('button', 'cell-view-btn' + (S.globalView === 'png'  ? ' active' : ''));
-  const btnLive = mkEl('button', 'cell-view-btn' + (S.globalView === 'live' ? ' active' : ''));
+  const btnPng   = mkEl('button', 'cell-view-btn' + (S.globalView === 'png'  ? ' active' : ''));
+  const btnLive  = mkEl('button', 'cell-view-btn' + (S.globalView === 'live' ? ' active' : ''));
   btnPng.textContent  = 'PNG';
   btnLive.textContent = '实时';
   viewBtns.appendChild(btnPng);
@@ -394,11 +546,15 @@ function buildCell(data, index, role, expIdx) {
   hdr.appendChild(btnCopy);
   cellEl.appendChild(hdr);
 
+  // ── Score bar (gen cells only) ──
+  if (!isGt) {
+    cellEl.appendChild(buildScoreBar(data.scores || null));
+  }
+
   // ── View area ──
   const viewArea = mkEl('div', 'view-area');
   cellEl.appendChild(viewArea);
 
-  // Internal helpers to switch view modes
   function showPng() {
     btnPng.classList.add('active');
     btnLive.classList.remove('active');
@@ -426,7 +582,6 @@ function buildCell(data, index, role, expIdx) {
       d.textContent = '无 SVG 内容';
       viewArea.appendChild(d);
     } else {
-      // Show spinner, then render via Blob URL
       const spin = mkEl('div', 'live-loading');
       spin.innerHTML = '<div class="mini-spin"></div>';
       viewArea.appendChild(spin);
@@ -435,11 +590,9 @@ function buildCell(data, index, role, expIdx) {
     cellEl.dataset.viewMode = 'live';
   }
 
-  // Wire buttons
   btnPng.addEventListener('click',  showPng);
   btnLive.addEventListener('click', showLive);
 
-  // Initial render based on global mode
   if (S.globalView === 'live') showLive(); else showPng();
 
   // ── SVG source code ──
@@ -489,7 +642,6 @@ function renderSvgBlob(container, svgCode, spinnerEl) {
   img.addEventListener('error', () => {
     URL.revokeObjectURL(url);
     if (spinnerEl && spinnerEl.parentNode === container) container.removeChild(spinnerEl);
-    // Fallback: iframe with srcdoc (escape SVG code for safe embedding)
     renderSvgIframe(container, svgCode);
   }, { once: true });
 
@@ -499,7 +651,6 @@ function renderSvgBlob(container, svgCode, spinnerEl) {
 function renderSvgIframe(container, svgCode) {
   const frame = document.createElement('iframe');
   frame.setAttribute('sandbox', 'allow-scripts');
-  // Encode SVG as data URI to avoid srcdoc injection issues
   const encoded = encodeURIComponent(
     '<!DOCTYPE html><html><head><style>' +
     'html,body{margin:0;padding:6px;background:#fff;display:flex;align-items:center;justify-content:center;height:100%;box-sizing:border-box;}' +
@@ -521,10 +672,8 @@ document.getElementById('global-view-btns').addEventListener('click', function (
   if (mode === S.globalView) return;
   S.globalView = mode;
 
-  // Update pill UI
   this.querySelectorAll('.pill-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
 
-  // Switch every cell that exists
   document.querySelectorAll('.cell-view-btn').forEach(b => {
     const isPng  = b.textContent === 'PNG';
     const isLive = b.textContent === '实时';
