@@ -139,12 +139,12 @@
     .btn-copy:hover { background: #e9ecef; }
     .btn-copy.copied { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
 
-    /* ── Score bar ── */
+    /* ── Score bar (sits at bottom of gen cell) ── */
     .score-bar {
       display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
       padding: 4px 8px;
       background: #f9fafb;
-      border-bottom: 1px solid #e9ecef;
+      border-top: 1px solid #e9ecef;
       font-size: 11px; flex-shrink: 0;
       min-height: 24px;
     }
@@ -327,13 +327,15 @@ async function init() {
 function initSortControls() {
   if (!S.scoreFields.length) return;
 
-  // Populate experiment selector (only dirs with scores)
+  // Populate experiment selector — include all experiments; mark those without scores
   const expSel = document.getElementById('sel-sort-exp');
   S.columns.forEach((col, i) => {
-    if (!col.has_scores) return;
     const opt = document.createElement('option');
     opt.value = String(i);
-    opt.textContent = `Exp ${i + 1} — ${col.label}`;
+    opt.textContent = col.has_scores
+      ? `Exp ${i + 1} — ${col.label}`
+      : `Exp ${i + 1} — ${col.label}（无评测数据）`;
+    if (!col.has_scores) opt.disabled = true;
     expSel.appendChild(opt);
   });
 
@@ -546,11 +548,6 @@ function buildCell(data, index, role, expIdx) {
   hdr.appendChild(btnCopy);
   cellEl.appendChild(hdr);
 
-  // ── Score bar (gen cells only) ──
-  if (!isGt) {
-    cellEl.appendChild(buildScoreBar(data.scores || null));
-  }
-
   // ── View area ──
   const viewArea = mkEl('div', 'view-area');
   cellEl.appendChild(viewArea);
@@ -610,6 +607,12 @@ function buildCell(data, index, role, expIdx) {
   codeSection.appendChild(pre);
 
   cellEl.appendChild(codeSection);
+
+  // ── Score bar (gen cells only, at bottom so view-area aligns with GT) ──
+  if (!isGt) {
+    cellEl.appendChild(buildScoreBar(data.scores || null));
+  }
+
   return cellEl;
 }
 
