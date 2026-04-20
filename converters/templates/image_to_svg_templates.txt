@@ -1,0 +1,50 @@
+Generate SVG code for this image.
+Create SVG code for the input image.
+Write SVG code for the provided image.
+Produce SVG code for this image.
+Provide SVG code for the input image.
+Return SVG code for the provided image.
+Generate SVG markup for this image.
+Create SVG markup for the input image.
+Write SVG markup for the provided image.
+Produce SVG markup for this image.
+Create an SVG for this image.
+Generate an SVG for the input image.
+Produce an SVG for the provided image.
+Return an SVG for this image.
+Generate an SVG representation of this image.
+Create an SVG representation of the input image.
+Produce an SVG representation of the provided image.
+Generate an SVG version of this image.
+Create an SVG version of the input image.
+Produce an SVG version of the provided image.
+Convert this image to SVG.
+Convert the input image to SVG.
+Convert the provided image to SVG.
+Recreate this image as SVG.
+Recreate the input image as SVG.
+Recreate the provided image as SVG.
+Reconstruct this image as SVG code.
+Reconstruct the input image as SVG code.
+Generate SVG code based on this image.
+Create SVG markup based on the input image.
+Produce an SVG based on the provided image.
+Generate SVG code from this image.
+Create SVG markup from the input image.
+Produce an SVG from the provided image.
+Generate SVG code corresponding to this image.
+Generate SVG code that matches this image closely.
+Create SVG markup that matches the input image closely.
+Produce an SVG that matches the provided image closely.
+Generate SVG code that accurately reflects this image.
+Create an SVG that accurately reflects the input image.
+Produce SVG markup that accurately reflects the provided image.
+Recreate this image as SVG as closely as possible.
+Recreate the input image as SVG as closely as possible.
+Recreate the provided image as SVG as closely as possible.
+Generate an SVG that accurately captures the appearance of this image.
+Generate SVG code that preserves the visible shapes, layout, and colors in this image.
+Create SVG markup that preserves the visible shapes, layout, and colors in the input image.
+Produce an SVG that preserves the visible shapes, layout, and colors in the provided image.
+Generate an SVG that preserves the composition and proportions of this image.
+Create SVG code that preserves the overall structure and colors of the input image.

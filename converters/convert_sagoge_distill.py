@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -196,6 +197,12 @@ def extract_last_svg(response: str) -> Optional[str]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def load_templates(templates_path: Path) -> list[str]:
+    """Load prompt templates, one per non-empty line."""
+    lines = templates_path.read_text(encoding="utf-8").splitlines()
+    return [l.strip() for l in lines if l.strip()]
+
+
 def _process_record(args: tuple) -> dict:
     """
     Convert a single raw record into a canonical sample with _meta.
@@ -210,6 +217,7 @@ def _process_record(args: tuple) -> dict:
     train_mode      : "sft" or "pretrain"
     shard_size      : number of images per subdirectory; 0 disables sharding
     render_timeout  : per-record cairosvg timeout in seconds; 0 disables timeout
+    user_text       : prompt template text sampled for this record
 
     Returns
     -------
@@ -218,10 +226,13 @@ def _process_record(args: tuple) -> dict:
       record      : canonical sample dict (with _meta) — always present
       skip_reason : str or None
     """
-    idx, record, images_dir, image_root, train_mode, shard_size, render_timeout = args
+    idx, record, images_dir, image_root, train_mode, shard_size, render_timeout, user_text = args
+
+    instruction = (record.get("instruction") or "").strip()
 
     meta: dict = {
         "input_id": record.get("id"),
+        "instruction": instruction,
         "model": record.get("model"),
         "response": record.get("response"),
         "prompt_tokens": record.get("prompt_tokens"),
@@ -236,11 +247,6 @@ def _process_record(args: tuple) -> dict:
     def _fail(reason: str) -> dict:
         meta["skip_reason"] = reason
         return {"idx": idx, "record": {"_meta": meta}, "skip_reason": reason}
-
-    # 1. User instruction
-    instruction = (record.get("instruction") or "").strip()
-    if not instruction:
-        return _fail("missing_instruction")
 
     # 2. Extract last SVG code block from the model response
     response_text = record.get("response") or ""
@@ -280,7 +286,7 @@ def _process_record(args: tuple) -> dict:
     relative_path = os.path.relpath(image_abs_path, image_root)
     user_content = [
         build_image_item(relative_path, "image/png", actual_w, actual_h),
-        build_text_item(instruction),
+        build_text_item(user_text),
     ]
     # Assistant text: wrap the last SVG in a markdown code fence
     assistant_text = f"```svg\n{svg_code}\n```"
@@ -310,6 +316,8 @@ def run_convert(
     shard_size: int,
     render_timeout: int,
     log_path: Optional[Path],
+    templates_path: Optional[Path] = None,
+    seed: int = 42,
 ) -> None:
     """Read raw JSONL, render SVGs in parallel, write intermediate JSONL with _meta.
 
@@ -324,6 +332,8 @@ def run_convert(
         shard_size      : max images per subdirectory under images_dir; 0 disables sharding
         render_timeout  : per-record cairosvg timeout in seconds; 0 disables timeout
         log_path        : optional log file path
+        templates_path  : path to prompt templates file (one per line); if None, uses instruction field
+        seed            : random seed for reproducible template sampling
     """
     images_dir.mkdir(parents=True, exist_ok=True)
     inter_jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -337,6 +347,13 @@ def run_convert(
     logger.info(f"[convert] workers:        {workers}")
     logger.info(f"[convert] shard_size:     {shard_size if shard_size > 0 else 'disabled'}")
     logger.info(f"[convert] render_timeout: {render_timeout if render_timeout > 0 else 'disabled'}s")
+    logger.info(f"[convert] seed:           {seed}")
+
+    # ── Load prompt templates ──
+    _default_templates_path = Path(__file__).parent / "templates" / "image_to_svg_templates.txt"
+    _templates_path = templates_path if templates_path is not None else _default_templates_path
+    templates = load_templates(_templates_path)
+    logger.info(f"[convert] templates:      {_templates_path} ({len(templates)} entries)")
 
     # ── Read all records ──
     records: list[dict] = []
@@ -356,9 +373,13 @@ def run_convert(
         logger.warning("[convert] No records to process.")
         return
 
+    # ── Sample one template per record with a fixed seed (reproducible) ──
+    rng = random.Random(seed)
+    sampled_texts = [rng.choice(templates) for _ in range(total)]
+
     # ── Parallel processing ──
     worker_args = [
-        (idx, rec, str(images_dir), str(image_root), train_mode, shard_size, render_timeout)
+        (idx, rec, str(images_dir), str(image_root), train_mode, shard_size, render_timeout, sampled_texts[idx])
         for idx, rec in enumerate(records)
     ]
     results: list[Optional[dict]] = [None] * total
@@ -564,6 +585,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="单条 SVG 渲染超时秒数（默认: 60；0 表示不限时）",
     )
     conv.add_argument(
+        "--templates", type=Path, default=None,
+        metavar="FILE",
+        help="prompt 模板文件路径（每行一条；默认: converters/templates/image_to_svg_templates.txt）",
+    )
+    conv.add_argument(
+        "--seed", type=int, default=42,
+        metavar="N",
+        help="模板随机采样的全局种子（默认: 42）",
+    )
+    conv.add_argument(
         "--log-path", type=Path, default=None,
         metavar="FILE",
         help="日志文件路径（可选）",
@@ -606,6 +637,8 @@ def main() -> None:
             shard_size=args.shard_size,
             render_timeout=args.render_timeout,
             log_path=args.log_path,
+            templates_path=args.templates,
+            seed=args.seed,
         )
     else:
         run_filter(
