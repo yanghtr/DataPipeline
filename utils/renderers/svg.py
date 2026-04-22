@@ -29,9 +29,10 @@ def _sigalrm_handler(signum: int, frame: object) -> None:
     raise TimeoutError("SVG render timed out")
 
 # ── SVG 属性解析正则 ──────────────────────────────────────────────────────────
-# 匹配数字或带 px 单位的数字；百分比等相对值不匹配（回退到 viewBox）
-_W_RE = re.compile(r'<svg\b[^>]*\bwidth=["\'](\d+(?:\.\d+)?)(?:px)?["\']', re.IGNORECASE)
-_H_RE = re.compile(r'<svg\b[^>]*\bheight=["\'](\d+(?:\.\d+)?)(?:px)?["\']', re.IGNORECASE)
+# 要求 width=/height= 前面是空白符（SVG 属性语法规则），从而排除 stroke-width、
+# min-height 等复合属性名。百分比等相对值不匹配（回退到 viewBox）。
+_W_RE = re.compile(r'<svg\b[^>]*(?<=\s)width=["\'](\d+(?:\.\d+)?)(?:px)?["\']', re.IGNORECASE)
+_H_RE = re.compile(r'<svg\b[^>]*(?<=\s)height=["\'](\d+(?:\.\d+)?)(?:px)?["\']', re.IGNORECASE)
 _VB_RE = re.compile(
     r'<svg\b[^>]*\bviewBox=["\'][\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)["\']',
     re.IGNORECASE,
