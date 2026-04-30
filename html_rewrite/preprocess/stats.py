@@ -72,6 +72,22 @@ class FormatterStats:
 
 
 @dataclass
+class LanguageStats:
+    declared_lang: str = ""
+    detected_lang: str = ""
+    detected_lang_score: float | None = None
+    detected_lang_top2: str = ""
+    detected_lang_top2_score: float | None = None
+    detector_margin: float | None = None
+    sample_text_chars: int = 0
+    letter_chars: int = 0
+    latin_letter_chars: int = 0
+    latin_ratio: float | None = None
+    passed: bool | None = None
+    reason: str = ""
+
+
+@dataclass
 class PreprocessStats:
     original_chars: int = 0
     cleaned_chars: int = 0
@@ -84,6 +100,7 @@ class PreprocessStats:
     hidden_inputs: HiddenInputStats = field(default_factory=HiddenInputStats)
     comments: CommentStats = field(default_factory=CommentStats)
     formatter: FormatterStats = field(default_factory=FormatterStats)
+    language: LanguageStats = field(default_factory=LanguageStats)
 
     @property
     def compression_ratio(self) -> float:
@@ -105,4 +122,5 @@ class PreprocessStats:
             "hidden_inputs": dataclasses.asdict(self.hidden_inputs),
             "comments": dataclasses.asdict(self.comments),
             "formatter": dataclasses.asdict(self.formatter),
+            "language": dataclasses.asdict(self.language),
         }

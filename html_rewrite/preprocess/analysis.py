@@ -92,6 +92,14 @@ def write_summary(
             "inline_style_max_chars": cfg.inline_style_max_chars,
             "min_preprocessed_chars": cfg.min_preprocessed_chars,
             "max_preprocessed_chars": cfg.max_preprocessed_chars,
+            "enable_language_filter": cfg.enable_language_filter,
+            "allowed_languages": cfg.allowed_languages,
+            "language_detector": cfg.language_detector,
+            "language_min_visible_text_chars": cfg.language_min_visible_text_chars,
+            "language_min_letter_chars": cfg.language_min_letter_chars,
+            "language_sample_max_chars": cfg.language_sample_max_chars,
+            "language_min_latin_ratio": cfg.language_min_latin_ratio,
+            "language_min_detector_margin": cfg.language_min_detector_margin,
         },
         "cleaned_chars": _describe_distribution(cleaned_chars),
         "original_chars": _describe_distribution(original_chars),
@@ -246,6 +254,8 @@ def _build_rule_counts(stats_entries: list[dict]) -> dict:
     truncated_hidden_inputs = 0
     total_comments = 0
     truncated_comments = 0
+    language_checked = 0
+    language_passed = 0
 
     for entry in stats_entries:
         stats = entry["stats"]
@@ -274,6 +284,12 @@ def _build_rule_counts(stats_entries: list[dict]) -> dict:
         total_comments += comments.get("total", 0)
         truncated_comments += comments.get("truncated", 0)
 
+        language = stats.get("language", {})
+        if language.get("passed") is not None:
+            language_checked += 1
+        if language.get("passed") is True:
+            language_passed += 1
+
     return {
         "media": {
             "total": total_media,
@@ -299,6 +315,10 @@ def _build_rule_counts(stats_entries: list[dict]) -> dict:
         "comments": {
             "total": total_comments,
             "truncated": truncated_comments,
+        },
+        "language": {
+            "checked": language_checked,
+            "passed": language_passed,
         },
     }
 

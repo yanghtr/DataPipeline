@@ -100,6 +100,9 @@ html_rewrite/
 │   ├── formatter.py          # HTML 格式标准化
 │   ├── filtering.py          # Stage 1 keep/reject gate
 │   ├── analysis.py           # Stage 1 汇总统计 + 分布图输出
+│   ├── parser.py             # lxml 依赖检查与统一解析入口
+│   ├── text.py               # 可见文本 / 声明语言抽取
+│   ├── language.py           # 英文主语言检测与过滤
 │   └── stats.py              # PreprocessStats dataclass
 ├── prompts/
 │   ├── __init__.py
@@ -141,6 +144,16 @@ inline_style_max_chars: 32768
 max_preprocessed_chars: 65536
 min_preprocessed_chars: 1024
 fetch_media_size: false
+
+# ── 英文主语言过滤（已实现）
+enable_language_filter: true
+allowed_languages: ["en"]
+language_detector: "langid"
+language_min_visible_text_chars: 200
+language_min_letter_chars: 100
+language_sample_max_chars: 12000
+language_min_latin_ratio: 0.6
+language_min_detector_margin: 3.0
 
 # ── 生成参数
 generation_params: {}
@@ -286,6 +299,20 @@ application/pdf → .pdf
       "node_count_before": 1504, "node_count_after": 1596,
       "tag_counts_before": { "img": 86, "script": 20, "nav": 2, ... },
       "tag_counts_after":  { "img": 86, "script": 20, "nav": 2, ... }
+    },
+    "language": {
+      "declared_lang": "en",
+      "detected_lang": "en",
+      "detected_lang_score": -92.1314,
+      "detected_lang_top2": "la",
+      "detected_lang_top2_score": -98.4421,
+      "detector_margin": 6.3107,
+      "sample_text_chars": 12000,
+      "letter_chars": 14221,
+      "latin_letter_chars": 14180,
+      "latin_ratio": 0.9971,
+      "passed": true,
+      "reason": "allowed_language"
     }
   }
 }
@@ -423,6 +450,100 @@ reject summary 不再使用 `p50/p90/p95` 这类摘要描述失败样本，而�
 这样会比单纯按 chars 更稳，因为不同语言和不同 HTML 结构的 token/chars 比例差异很大。  
 如果暂时不想引入 tokenizer，先只做 `max_preprocessed_chars` 也完全合理。
 
+**E. 英文主语言 gate（已实现）**
+
+目标不是判断“这个域名是否是英文站”，而是判断**当前页面的主要可见文本是否以英文为主**。  
+因此应按页面过滤，而不是按站点域名过滤。
+
+#### 为什么不建议只用规则
+
+纯规则方法（只看 `html lang`、URL 中的 `/en/`、域名后缀、ASCII 比例）实现简单，但鲁棒性不足：
+
+- `html lang` 经常缺失、乱填，或模板页统一写死；
+- 多语言站点同一域名下会混有英文页和非英文页；
+- 页面可能主要是英文正文，但导航、cookie banner、页脚混入多语；
+- 仅看 ASCII / 拉丁字母比例，会把法语、德语、西班牙语等也误判成英文。
+
+规则信号适合作为辅助，不适合作为主判据。
+
+#### `langid.py` 是什么
+
+`langid.py` 不是纯规则方法，也不是需要联网调用的大模型。  
+它是一个**内置预训练语言识别模型**（传统统计模型，基于字符 n-gram / 朴素贝叶斯风格方法），随 Python 包一起分发：
+
+- 运行时不需要再下载模型；
+- 不需要 GPU；
+- 推理成本低，适合放在 Stage 1 批量过滤；
+- 输入一段文本，输出预测语言和一个相对分数。
+
+工程上只需要安装 `langid>=1.1.6` 这个 Python 包，不需要额外下载模型文件。
+
+需要注意：
+- 它输出的 score 不是严格校准后的概率；
+- 因此更稳妥的做法不是只看 `classify()` 的单个分数，而是比较 top1 / top2 的差距（margin）。
+
+#### 当前实现方案
+
+推荐采用“**规则信号 + 轻量模型**”的多信号方案：
+
+1. 从预处理后的 DOM 中抽取 `visible_text`
+2. 若 `visible_text_chars < language_min_visible_text_chars`，直接 reject  
+   reject reason：`language_detection_insufficient_text`
+3. 统计字母字符数；若字母数 `< language_min_letter_chars`，直接 reject  
+   reject reason：`language_detection_insufficient_letters`
+4. 做快速脚本检查：计算拉丁字母占全部字母的比例  
+   若 `< language_min_latin_ratio`，直接 reject  
+   reject reason：`language_not_mainly_latin_script`
+5. 收集声明性信号：
+   - `<html lang>`
+   - `content-language`
+   - `og:locale`
+6. 对可见文本做采样后送入 `langid`：
+   - 不用整页全文，建议截取前/中/后拼接，总长最多 `language_sample_max_chars`
+   - 这样比只取开头更不容易被导航和页头污染
+7. 取 `langid.rank(text)` 的 top1 / top2：
+   - 若 `top1 != "en"`，reject  
+     reject reason：`non_english_page`
+   - 若 `top1 == "en"` 但 `top1_score - top2_score < language_min_detector_margin`，reject  
+     reject reason：`language_detection_low_margin`
+8. 若声明性信号明确是非英文，且 detector 也不是 `en`，直接 reject
+9. 最终只保留 `detected_lang == "en"` 且 margin 足够的页面
+
+#### 为什么这套方案更鲁棒
+
+- 先用 `visible_text`，避免让 HTML 标签、脚本和样式干扰检测；
+- 先做最便宜的“文本足够长 / 字母足够多 / 拉丁脚本占比”过滤，减少 detector 的误判；
+- 再用 `langid` 做主判据，避免纯规则误杀；
+- 用 top1/top2 margin，而不是迷信单个 score；
+- 用“前中后采样”，避免整页被单一导航区域主导。
+
+#### 推荐初始阈值
+
+- `language_min_visible_text_chars = 200`
+- `language_min_letter_chars = 100`
+- `language_sample_max_chars = 12000`
+- `language_min_latin_ratio = 0.6`
+- `language_min_detector_margin = 3.0`
+
+这些值适合作为第一版默认值，后续根据 reject 明细和抽样质检再调。
+
+#### 当前写出的统计字段
+
+当前会在 `preprocess_stats.language` 中记录：
+
+- `declared_lang`
+- `detected_lang`
+- `detected_lang_score`
+- `detected_lang_top2`
+- `detected_lang_top2_score`
+- `detector_margin`
+- `sample_text_chars`
+- `letter_chars`
+- `latin_letter_chars`
+- `latin_ratio`
+- `passed`
+- `reason`
+
 ### 9.4 reject 文件格式建议
 
 ```json
@@ -558,6 +679,7 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 beautifulsoup4>=4.12    # HTML 解析和序列化
 lxml>=5.0              # BeautifulSoup 后端，比 html.parser 更鲁棒（处理真实脏 HTML）
 matplotlib>=3.8        # Stage 1 分布图输出
+langid>=1.1.6          # 英文主语言检测；包内自带轻量模型，无需额外下载文件
 ```
 
 其余依赖（loguru、requests、pyyaml）沿用项目现有版本。

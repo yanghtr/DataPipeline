@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> None:
         preprocessed_html, stats = preprocess(rec.get("html", ""), cfg)
         logger.info(f"[demo] 原始字符数={stats.original_chars:,}  清洗后={stats.cleaned_chars:,}  压缩比={stats.compression_ratio}")
         logger.info(f"[demo] 媒体替换={stats.media.replaced}  script 截断={stats.scripts.inline_truncated}  style 截断={stats.styles.inline_truncated}")
+        if cfg.enable_language_filter:
+            logger.info(
+                f"[demo] 语言过滤已启用：可见文本={stats.visible_text_chars:,} chars，"
+                "如需查看语言判定，请跑完整 Stage 1 或后续在过滤阶段查看 stats/reject 日志"
+            )
         print("\n=== preprocessed_html (前 2000 chars) ===")
         print(preprocessed_html[:2000])
         print("\n=== preprocess_stats ===")

@@ -27,6 +27,7 @@ from .config import HtmlRewriteConfig
 from .preprocess import PreprocessStats, preprocess
 from .preprocess.analysis import write_plots, write_reject_reason_report, write_summary
 from .preprocess.filtering import decide_keep
+from .preprocess.language import ensure_langid_available
 from .preprocess.parser import ensure_lxml_available
 
 
@@ -50,6 +51,8 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
 
     # 缺关键解析依赖时直接停止，避免静默降级或整批错误 reject。
     ensure_lxml_available()
+    if cfg.enable_language_filter:
+        ensure_langid_available()
 
     # ── 1. 读取全量输入 ───────────────────────────────────────────────────────
     records: list[dict] = []
@@ -114,12 +117,8 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
         meta = {k: rec[k] for k in ("url", "final_url", "crawl_time", "page_type", "part", "crawl_type") if k in rec}
         try:
             preprocessed_html, stats = preprocess(rec.get("html", ""), cfg)
+            decision = decide_keep(preprocessed_html, stats, cfg)
             stats_dict = stats.to_dict()
-            decision = decide_keep(
-                preprocessed_html,
-                min_preprocessed_chars=cfg.min_preprocessed_chars,
-                max_preprocessed_chars=cfg.max_preprocessed_chars,
-            )
             stats_entry = {
                 "id": rec_id,
                 "status": "kept" if decision.keep else "rejected",

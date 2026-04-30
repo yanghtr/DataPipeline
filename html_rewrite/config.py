@@ -44,6 +44,14 @@ class HtmlRewriteConfig:
     min_preprocessed_chars: int = 1024   # 过空 gate
     max_preprocessed_chars: int = 65536  # 超长 gate
     fetch_media_size: bool = False      # 是否尝试下载图片头部以获取尺寸（默认关闭）
+    enable_language_filter: bool = True
+    allowed_languages: list[str] = field(default_factory=lambda: ["en"])
+    language_detector: str = "langid"
+    language_min_visible_text_chars: int = 200
+    language_min_letter_chars: int = 100
+    language_sample_max_chars: int = 12000
+    language_min_latin_ratio: float = 0.6
+    language_min_detector_margin: float = 3.0
 
     # ── 运行 ─────────────────────────────────────────────────────────────────
     num_workers: int = 16

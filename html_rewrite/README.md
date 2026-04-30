@@ -15,9 +15,11 @@ raw JSONL  →  [Stage 1: 预处理 + 过滤 + 统计可视化]  →  preprocess
 ### 1. 安装依赖
 
 ```bash
-pip install beautifulsoup4>=4.12 lxml>=5.0 matplotlib>=3.8
+pip install beautifulsoup4>=4.12 lxml>=5.0 matplotlib>=3.8 langid>=1.1.6
 # 其余依赖见项目根目录 requirements.txt
 ```
+
+`langid` 只需要安装 Python 包本身，不需要额外下载模型文件；语言识别模型已经随包分发。
 
 ### 2. 配置文件
 
@@ -28,6 +30,8 @@ html_rewrite/configs/default_local.yaml
 ```
 
 直接编辑这个文件即可；下面的命令也默认使用它。
+
+默认配置已启用“只保留英文主语言页面”的过滤；如需关闭或调阈值，直接编辑这个文件即可。
 
 必填字段：
 
@@ -107,6 +111,19 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 | `generation_params` | `{}` | 透传给 API 的生成参数（temperature、max_tokens 等） |
 | `prompt_module` | `html_rewrite` | prompts/ 下的 prompt 模块名 |
 
+英文主语言过滤参数：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `enable_language_filter` | `false` | 是否启用“只保留英文主语言页面” |
+| `allowed_languages` | `["en"]` | 允许保留的主语言 |
+| `language_detector` | `langid` | 轻量语言识别器 |
+| `language_min_visible_text_chars` | `200` | 可见文本太短时不做可信语言判断 |
+| `language_min_letter_chars` | `100` | 字母字符数下限，避免数字/符号页误判 |
+| `language_sample_max_chars` | `12000` | 送入 detector 的最大文本长度 |
+| `language_min_latin_ratio` | `0.6` | 拉丁字母在全部字母中的最低占比 |
+| `language_min_detector_margin` | `3.0` | `langid` top1/top2 分数差最小值 |
+
 ## 输出格式
 
 ### Stage 1 输出（preprocessed JSONL）
@@ -130,6 +147,20 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
     "hidden_inputs": { "total": 0, "truncated": 0 },
     "comments": { "total": 3, "truncated": 0 },
     "formatter": { "parse_ok": true, "node_count_before": 1504, "node_count_after": 1596 }
+    "language": {
+      "declared_lang": "en",
+      "detected_lang": "en",
+      "detected_lang_score": -92.1314,
+      "detected_lang_top2": "la",
+      "detected_lang_top2_score": -98.4421,
+      "detector_margin": 6.3107,
+      "sample_text_chars": 12000,
+      "letter_chars": 14221,
+      "latin_letter_chars": 14180,
+      "latin_ratio": 0.9971,
+      "passed": true,
+      "reason": "allowed_language"
+    }
   }
 }
 ```
@@ -140,6 +171,7 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 - `visible_text_chars`：页面可见文本长度，后续如果要加双 gate 会很有用
 - `compression_ratio`：判断当前预处理是否真的压缩了上下文
 - `scripts/json_payloads/styles/hidden_inputs/comments`：各类局部截断的次数和长度分布
+- `language`：页面主语言检测结果和英文过滤决策
 
 ### Stage 1 reject 输出（reject JSONL）
 
@@ -163,6 +195,11 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 - `too_short_after_preprocess`
 - `too_long_after_preprocess`
 - `invalid_or_empty_html`
+- `language_detection_insufficient_text`
+- `language_detection_insufficient_letters`
+- `language_not_mainly_latin_script`
+- `non_english_page`
+- `language_detection_low_margin`
 - `preprocess_exception`
 
 `*_reject_reasons.json` 会把 reject 按 reason 分组，并直接列出：
@@ -236,6 +273,67 @@ Stage 1 会额外生成：
 
 如果环境里缺少 `lxml`，Stage 1 会直接报错停止；不会静默 fallback 到其他 parser。
 
+## 英文主语言过滤
+
+目标是筛出“**页面主要可见文本为英文**”的页面，而不是简单判断这个域名是不是英文站。
+
+### `langid.py` 是规则还是模型
+
+`langid.py` 不是纯规则方法。它自带一个轻量的**预训练语言识别模型**，安装包里已经包含模型参数：
+
+- 不需要联网下载模型
+- 不需要 GPU
+- 不属于大模型推理
+- 适合放在 Stage 1 批量过滤
+
+它比只看 `html lang`、URL、域名后缀、ASCII 比例这类规则更鲁棒；但也不建议单独盲信一次检测结果，所以推荐和规则信号结合使用。
+
+### 为什么不建议只用规则
+
+只用规则会遇到这些问题：
+
+- 很多网页没有 `html lang`，或者模板把 `lang` 写死
+- 多语言站点同一域名下可能同时有英文页和非英文页
+- ASCII / 拉丁字符比例高，并不等于英文，法语/德语/西语也可能满足
+- URL 中的 `/en/`、域名后缀、title 文本都只能做弱信号
+
+### 当前实现
+
+1. 先抽取 `visible_text`，不要直接拿原始 HTML 做检测。
+2. 如果 `visible_text_chars < 200`，直接 reject：`language_detection_insufficient_text`。
+3. 如果字母字符数 `< 100`，直接 reject：`language_detection_insufficient_letters`。
+4. 计算拉丁字母占全部字母的比例；若 `< 0.6`，直接 reject：`language_not_mainly_latin_script`。
+5. 收集声明性信号：`<html lang>`、`content-language`、`og:locale`。
+6. 对可见文本做采样后送入 `langid`：
+   - 建议取前/中/后文本拼接
+   - 总长度最多 `12000 chars`
+7. 用 `langid.rank()` 看 top1 / top2：
+   - 若 `top1 != "en"`，reject：`non_english_page`
+   - 若 `top1 == "en"` 但 top1-top2 差值 `< 3.0`，reject：`language_detection_low_margin`
+8. 最终只保留主语言判断稳定为英文的页面。
+
+### 为什么这套更稳
+
+- 先用可见文本，避免 HTML 标签和脚本污染
+- 先用便宜规则过滤掉明显不适合检测的页面
+- 再用轻量模型做主判据
+- 用 top1/top2 差值，而不是迷信单个 score
+- 用前中后采样，降低导航栏或页头对整页判断的干扰
+
+### 建议记录的调试字段
+
+当前会在 stats 或 reject 明细中记录这些字段：
+
+- `declared_lang`
+- `detected_lang`
+- `detected_lang_top2`
+- `detector_margin`
+- `visible_text_chars`
+- `letter_chars`
+- `latin_ratio`
+- `language_filter_decision`
+- `language_filter_reason`
+
 ## 媒体 placeholder 格式
 
 所有媒体资源路径替换为：
@@ -269,6 +367,9 @@ html_rewrite/
 │   ├── formatter.py          # HTML 格式标准化
 │   ├── filtering.py          # Stage 1 keep/reject gate
 │   ├── analysis.py           # Stage 1 汇总统计 + 直方图输出
+│   ├── parser.py             # lxml 依赖检查与统一解析入口
+│   ├── text.py               # 可见文本 / 声明语言抽取
+│   ├── language.py           # 英文主语言检测与过滤
 │   ├── preprocessor.py       # 编排器
 │   └── stats.py              # PreprocessStats dataclass
 ├── prompts/

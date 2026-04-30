@@ -27,6 +27,14 @@ inline_style_max_chars: 32768
 min_preprocessed_chars: 1024
 max_preprocessed_chars: 65536
 fetch_media_size: false
+enable_language_filter: true
+allowed_languages: ["en"]
+language_detector: "langid"
+language_min_visible_text_chars: 200
+language_min_letter_chars: 100
+language_sample_max_chars: 12000
+language_min_latin_ratio: 0.6
+language_min_detector_margin: 3.0
 
 # ── 生成参数（透传给 API payload）────────────────────────────────────────────
 generation_params: {}
