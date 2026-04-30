@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import re
 import struct
+from typing import Callable
 from urllib.parse import urlparse
 
-from bs4 import BeautifulSoup, Comment, Tag
+import requests as _requests
+from bs4 import BeautifulSoup, Tag
 
 from .stats import MediaStats
 
@@ -46,10 +48,8 @@ _DATA_URI_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
-_TRACKED_TAGS: list[str] = [
-    "header", "main", "footer", "nav", "aside",
-    "img", "video", "audio", "iframe", "script", "style",
-]
+_FETCH_TIMEOUT = 3.0
+_FETCH_MAX_BYTES = 8192
 
 
 def _ext_from_url(url: str) -> str:
@@ -91,13 +91,45 @@ def _parse_jpeg_size(data: bytes) -> tuple[int, int] | None:
         if data[i] != 0xFF:
             break
         marker = data[i + 1]
-        if marker in (0xC0, 0xC1, 0xC2):  # SOF0 / SOF1 / SOF2
+        if marker in (0xC0, 0xC1, 0xC2):
             if i + 9 <= len(data):
                 h, w = struct.unpack(">HH", data[i + 5:i + 9])
                 return w, h
         length = struct.unpack(">H", data[i + 2:i + 4])[0] if i + 4 <= len(data) else 0
         i += 2 + length
     return None
+
+
+def _fetch_image_size(url: str, stats: MediaStats) -> tuple[int | None, int | None]:
+    """下载图片头部字节解析尺寸。仅当 fetch_media_size=True 且无法从标签属性获取尺寸时调用。"""
+    stats.fetch_attempted += 1
+    try:
+        resp = _requests.get(
+            url,
+            timeout=_FETCH_TIMEOUT,
+            stream=True,
+            headers={"Range": f"bytes=0-{_FETCH_MAX_BYTES - 1}"},
+        )
+        if resp.status_code not in (200, 206):
+            stats.fetch_failed += 1
+            return None, None
+        data = b""
+        for chunk in resp.iter_content(chunk_size=1024):
+            data += chunk
+            if len(data) >= _FETCH_MAX_BYTES:
+                break
+        size = _parse_png_size(data) or _parse_jpeg_size(data)
+        if size:
+            stats.fetch_ok += 1
+            return size
+        stats.fetch_failed += 1
+        return None, None
+    except _requests.exceptions.Timeout:
+        stats.fetch_timeout += 1
+        return None, None
+    except Exception:
+        stats.fetch_failed += 1
+        return None, None
 
 
 def _size_from_base64(data_uri: str) -> tuple[int | None, int | None]:
@@ -110,7 +142,7 @@ def _size_from_base64(data_uri: str) -> tuple[int | None, int | None]:
     if "image" not in mime.lower():
         return None, None
     try:
-        raw = base64.b64decode(b64_data[:8192])  # 只解码头部
+        raw = base64.b64decode(b64_data[:8192])
         size = _parse_png_size(raw) or _parse_jpeg_size(raw)
         if size:
             return size
@@ -119,30 +151,58 @@ def _size_from_base64(data_uri: str) -> tuple[int | None, int | None]:
     return None, None
 
 
-def _make_placeholder(url: str, tag_w: str | None, tag_h: str | None, is_base64: bool = False) -> str:
-    """构造 placeholder 路径。"""
-    if tag_w and tag_h:
-        w, h = tag_w, tag_h
-    elif is_base64:
-        pw, ph = _size_from_base64(url)
-        w = str(pw) if pw else "unknown"
-        h = str(ph) if ph else "unknown"
-    else:
-        w, h = "unknown", "unknown"
-
-    ext = _ext_from_mime(
-        _DATA_URI_RE.match(url).group(1) if is_base64 and _DATA_URI_RE.match(url) else ""
-    ) if is_base64 else _ext_from_url(url)
-
-    return f"__MEDIA_PLACEHOLDER__/media__width{w}__height{h}{ext}"
-
-
 def _is_data_uri(val: str) -> bool:
     return val.strip().startswith("data:")
 
 
-def _replace_attr(tag: Tag, attr: str, stats: MediaStats, tag_type: str, w_attr: str = "width", h_attr: str = "height") -> None:
-    """替换单个属性中的媒体路径。"""
+def _resolve_size(
+    url: str,
+    tag_w: str | None,
+    tag_h: str | None,
+    is_base64: bool,
+    fetch_fn: Callable[[str], tuple[int | None, int | None]] | None,
+) -> tuple[str, str]:
+    """按优先级确定宽高：① 标签属性 → ② base64 头部解析 → ③ 网络 fetch → ④ unknown。"""
+    if tag_w and tag_h:
+        return tag_w, tag_h
+    if is_base64:
+        pw, ph = _size_from_base64(url)
+        return (str(pw) if pw else "unknown"), (str(ph) if ph else "unknown")
+    if fetch_fn is not None:
+        pw, ph = fetch_fn(url)
+        return (str(pw) if pw else "unknown"), (str(ph) if ph else "unknown")
+    return "unknown", "unknown"
+
+
+def _build_placeholder(
+    url: str,
+    tag_w: str | None,
+    tag_h: str | None,
+    is_base64: bool,
+    fetch_fn: Callable | None,
+) -> str:
+    """构造 placeholder 路径。"""
+    w, h = _resolve_size(url, tag_w, tag_h, is_base64, fetch_fn)
+
+    if is_base64:
+        m = _DATA_URI_RE.match(url)
+        ext = _ext_from_mime(m.group(1)) if m else ".media"
+    else:
+        ext = _ext_from_url(url)
+
+    return f"__MEDIA_PLACEHOLDER__/media__width{w}__height{h}{ext}"
+
+
+def _replace_attr(
+    tag: Tag,
+    attr: str,
+    stats: MediaStats,
+    tag_type: str,
+    fetch_fn: Callable | None = None,
+    w_attr: str = "width",
+    h_attr: str = "height",
+) -> None:
+    """替换单个属性中的媒体路径，并更新统计。fetch_fn 只对外链图片生效。"""
     val = tag.get(attr)
     if not val or not isinstance(val, str):
         return
@@ -150,14 +210,23 @@ def _replace_attr(tag: Tag, attr: str, stats: MediaStats, tag_type: str, w_attr:
     if not val or val == "#":
         return
 
-    tag_w = tag.get(w_attr)
-    tag_h = tag.get(h_attr)
-    tag_w = str(tag_w).strip() if tag_w else None
-    tag_h = str(tag_h).strip() if tag_h else None
-
+    tag_w = str(tag.get(w_attr, "")).strip() or None
+    tag_h = str(tag.get(h_attr, "")).strip() or None
     is_b64 = _is_data_uri(val)
-    placeholder = _make_placeholder(val, tag_w, tag_h, is_base64=is_b64)
-    tag[attr] = placeholder
+
+    # fetch 只对外链图片启用，视频/音频/iframe 不 fetch
+    effective_fetch = fetch_fn if (not is_b64 and tag_type == "img") else None
+
+    # 解析尺寸一次（避免 fetch 被调用两次）
+    w, h = _resolve_size(val, tag_w, tag_h, is_b64, effective_fetch)
+
+    if is_b64:
+        m = _DATA_URI_RE.match(val)
+        ext = _ext_from_mime(m.group(1)) if m else ".media"
+    else:
+        ext = _ext_from_url(val)
+
+    tag[attr] = f"__MEDIA_PLACEHOLDER__/media__width{w}__height{h}{ext}"
 
     stats.total += 1
     stats.replaced += 1
@@ -175,46 +244,51 @@ def _replace_attr(tag: Tag, attr: str, stats: MediaStats, tag_type: str, w_attr:
     else:
         stats.iframes += 1
 
-    if (tag_w and tag_w != "unknown") and (tag_h and tag_h != "unknown"):
+    if w != "unknown" and h != "unknown":
         stats.with_size += 1
     else:
         stats.without_size += 1
 
 
 def _replace_css_urls(css_text: str, stats: MediaStats) -> str:
-    """替换 CSS 文本中所有 url() 引用。"""
+    """替换 CSS 文本中所有 url() 引用（CSS 资源不 fetch 尺寸）。"""
     def _sub(m: re.Match) -> str:
         url = m.group(2).strip()
         if not url or url.startswith("#"):
             return m.group(0)
         is_b64 = _is_data_uri(url)
-        placeholder = _make_placeholder(url, None, None, is_base64=is_b64)
+        placeholder = _build_placeholder(url, None, None, is_b64, None)
         stats.total += 1
         stats.replaced += 1
         if is_b64:
             stats.base64 += 1
-            stats.without_size += 1
         else:
             stats.regular += 1
-            stats.without_size += 1
+        stats.without_size += 1
         return f"url({placeholder})"
 
     return _CSS_URL_RE.sub(_sub, css_text)
 
 
-def replace_all(soup: BeautifulSoup, stats: MediaStats) -> None:
-    """对 soup 原地做全部媒体路径替换。"""
+def replace_all(soup: BeautifulSoup, stats: MediaStats, fetch_media_size: bool = False) -> None:
+    """对 soup 原地做全部媒体路径替换。
+
+    Args:
+        soup:             已解析的 BeautifulSoup 对象
+        stats:            MediaStats，原地更新
+        fetch_media_size: 若为 True，对缺少 width/height 的外链图片尝试下载头部解析尺寸
+    """
+    fetch_fn = (lambda url: _fetch_image_size(url, stats)) if fetch_media_size else None
 
     # img[src] 和 img[srcset]
     for tag in soup.find_all("img"):
         if tag.get("src"):
-            _replace_attr(tag, "src", stats, "img")
-        # srcset：无论是否有 src 都处理，整个属性替换为单个 placeholder
+            _replace_attr(tag, "src", stats, "img", fetch_fn=fetch_fn)
         if tag.get("srcset"):
             first_url = str(tag["srcset"]).split()[0]
             tag_w = str(tag.get("width", "")).strip() or None
             tag_h = str(tag.get("height", "")).strip() or None
-            placeholder = _make_placeholder(first_url, tag_w, tag_h)
+            placeholder = _build_placeholder(first_url, tag_w, tag_h, False, fetch_fn)
             tag["srcset"] = placeholder
             stats.total += 1
             stats.replaced += 1
@@ -230,7 +304,7 @@ def replace_all(soup: BeautifulSoup, stats: MediaStats) -> None:
         if tag.get("src"):
             _replace_attr(tag, "src", stats, "video")
         if tag.get("srcset"):
-            placeholder = _make_placeholder(str(tag["srcset"]).split()[0], None, None)
+            placeholder = _build_placeholder(str(tag["srcset"]).split()[0], None, None, False, None)
             tag["srcset"] = placeholder
             stats.total += 1
             stats.replaced += 1

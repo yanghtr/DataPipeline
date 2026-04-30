@@ -27,7 +27,7 @@ def preprocess(html: str, cfg: HtmlRewriteConfig) -> tuple[str, PreprocessStats]
         stats.formatter.parse_ok = False
 
     # 1. 媒体路径替换
-    media.replace_all(soup, stats.media)
+    media.replace_all(soup, stats.media, cfg.fetch_media_size)
 
     # 2. inline script 截断
     scripts.truncate_inline(soup, stats.scripts, cfg.inline_script_max_chars)
