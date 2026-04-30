@@ -31,6 +31,7 @@ stats_log_path: "logs/html_rewrite_stats.jsonl"
 reject_log_path: "logs/html_rewrite_rejects.jsonl"
 summary_log_path: "logs/html_rewrite_summary.json"
 stats_plot_dir: "logs/html_rewrite_plots"
+stats_hist_bins: 120
 
 # ── 预处理阈值 ────────────────────────────────────────────────────────────────
 inline_script_max_chars: 4096

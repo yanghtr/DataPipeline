@@ -90,6 +90,7 @@ def write_summary(
             "hidden_input_max_chars": cfg.hidden_input_max_chars,
             "html_comment_max_chars": cfg.html_comment_max_chars,
             "inline_style_max_chars": cfg.inline_style_max_chars,
+            "stats_hist_bins": cfg.stats_hist_bins,
             "min_preprocessed_chars": cfg.min_preprocessed_chars,
             "max_preprocessed_chars": cfg.max_preprocessed_chars,
             "enable_language_filter": cfg.enable_language_filter,
@@ -211,7 +212,15 @@ def write_plots(
         if not values:
             continue
         out_path = plot_dir / filename
-        _plot_hist(plt, values, out_path, title=title, xlabel=xlabel, thresholds=thresholds)
+        _plot_hist(
+            plt,
+            values,
+            out_path,
+            title=title,
+            xlabel=xlabel,
+            thresholds=thresholds,
+            bins=cfg.stats_hist_bins,
+        )
         written.append(filename)
 
     if cleaned_all and (cleaned_kept or cleaned_rejected):
@@ -223,6 +232,7 @@ def write_plots(
             out_path=out_path,
             min_chars=cfg.min_preprocessed_chars,
             max_chars=cfg.max_preprocessed_chars,
+            bins=cfg.stats_hist_bins,
         )
         written.append(out_path.name)
 
@@ -387,10 +397,10 @@ def _plot_hist(
     title: str,
     xlabel: str,
     thresholds: list[tuple[int, str, str]],
+    bins: int,
 ) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
-    bins = min(60, max(10, int(len(values) ** 0.5)))
-    ax.hist(values, bins=bins, color="steelblue", alpha=0.85, edgecolor="white")
+    ax.hist(values, bins=_resolve_hist_bins(values, bins), color="steelblue", alpha=0.85, edgecolor="white")
     for threshold, label, color in thresholds:
         if threshold > 0:
             ax.axvline(threshold, color=color, linestyle="--", linewidth=1.8, label=f"{label}={threshold:,}")
@@ -412,13 +422,14 @@ def _plot_keep_vs_reject_hist(
     out_path: Path,
     min_chars: int,
     max_chars: int,
+    bins: int,
 ) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
-    bins = 50
+    resolved_bins = _resolve_hist_bins(kept + rejected, bins)
     if kept:
-        ax.hist(kept, bins=bins, alpha=0.55, color="steelblue", label=f"kept ({len(kept):,})")
+        ax.hist(kept, bins=resolved_bins, alpha=0.55, color="steelblue", label=f"kept ({len(kept):,})")
     if rejected:
-        ax.hist(rejected, bins=bins, alpha=0.55, color="coral", label=f"rejected ({len(rejected):,})")
+        ax.hist(rejected, bins=resolved_bins, alpha=0.55, color="coral", label=f"rejected ({len(rejected):,})")
     if min_chars > 0:
         ax.axvline(min_chars, color="forestgreen", linestyle="--", linewidth=1.8, label=f"min_keep={min_chars:,}")
     if max_chars > 0:
@@ -430,6 +441,12 @@ def _plot_keep_vs_reject_hist(
     fig.tight_layout()
     fig.savefig(out_path, dpi=130)
     plt.close(fig)
+
+
+def _resolve_hist_bins(values: list[float], requested_bins: int) -> int:
+    if not values:
+        return max(10, requested_bins)
+    return max(10, min(max(10, requested_bins), len(values)))
 
 
 def _plot_reject_reasons(plt, reject_reasons: Counter, out_path: Path) -> None:

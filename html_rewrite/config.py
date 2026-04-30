@@ -37,6 +37,7 @@ class HtmlRewriteConfig:
     reject_log_path: str = "logs/preprocess_rejects.jsonl" # Stage 1 reject 样本
     summary_log_path: str = "logs/preprocess_summary.json" # Stage 1 聚合统计
     stats_plot_dir: str = "logs/preprocess_plots"          # Stage 1 分布图目录
+    stats_hist_bins: int = 120                             # Stage 1 直方图 bins 数
 
     # ── 生成参数（透传到 API payload）────────────────────────────────────────
     generation_params: dict = field(default_factory=dict)

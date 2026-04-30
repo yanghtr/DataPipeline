@@ -139,6 +139,7 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 | `reject_log_path` | `logs/html_rewrite_rejects.jsonl` | 旧模式被 Stage 1 过滤掉的样本日志 |
 | `summary_log_path` | `logs/html_rewrite_summary.json` | 旧模式 Stage 1 汇总统计 |
 | `stats_plot_dir` | `logs/html_rewrite_plots` | 旧模式 Stage 1 分布图输出目录 |
+| `stats_hist_bins` | `120` | Stage 1 直方图 bins 数；调大可看更细的分布 |
 | `inline_script_max_chars` | `4096` | inline script 截断阈值 |
 | `json_payload_max_chars` | `4096` | JSON payload 截断阈值 |
 | `hidden_input_max_chars` | `4096` | hidden input value 截断阈值 |
@@ -291,6 +292,7 @@ Stage 1 会额外生成：
 - `stats_log_path`：逐条统计 JSONL，包含 `status=kept/rejected` 与 `reject_reason`
 - `summary_log_path`：聚合统计 JSON，包含 keep/reject 数量、原因分布和长度分位数
 - `stats_plot_dir`：若环境已安装 `matplotlib`，自动输出多张分布图 PNG
+- `stats_hist_bins`：控制直方图 bins 数；默认 `120`，如果觉得柱子仍然太粗可以继续调大
 
 `summary_log_path` 中会包含：
 

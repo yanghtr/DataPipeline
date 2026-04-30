@@ -168,6 +168,7 @@ stats_log_path: "logs/preprocess_stats.jsonl"
 reject_log_path: "logs/preprocess_rejects.jsonl"
 summary_log_path: "logs/preprocess_summary.json"
 stats_plot_dir: "logs/preprocess_plots"
+stats_hist_bins: 120
 
 # ── 预处理阈值（对应规范固定值，可按实际分布调整）
 inline_script_max_chars: 4096
@@ -209,6 +210,7 @@ resume: true
 - 若未设置 `run_root_dir`，则回退到旧单文件输出模式，使用 `preprocessed_path`、`output_path` 等字段
 - 不论是 `input_paths` 还是模板展开模式，处理顺序都严格按 shard 列表顺序执行
 - `--limit`、resume、输出顺序、`demo --index` 都基于拼接后的全局顺序
+- `stats_hist_bins` 控制 Stage 1 直方图 bins 数；默认建议 `120`，如果分布仍不够清楚可以继续调大
 
 ---
 
