@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from html_rewrite.config import HtmlRewriteConfig
 from .stats import PreprocessStats
 from . import media, scripts, styles, forms, comments, formatter
+from .parser import parse_html_with_lxml
 
 _NON_VISIBLE_PARENTS = {"script", "style", "noscript", "template", "head", "title", "meta"}
 
@@ -35,13 +36,8 @@ def preprocess(html: str, cfg: HtmlRewriteConfig) -> tuple[str, PreprocessStats]
     """
     stats = PreprocessStats(original_chars=len(html))
 
-    try:
-        soup = BeautifulSoup(html, "lxml")
-        stats.formatter.parse_ok = True
-    except Exception:
-        # 极少数情况 lxml 解析失败，降级到 html.parser
-        soup = BeautifulSoup(html, "html.parser")
-        stats.formatter.parse_ok = False
+    soup = parse_html_with_lxml(html)
+    stats.formatter.parse_ok = True
 
     # 1. 媒体路径替换
     media.replace_all(soup, stats.media, cfg.fetch_media_size)

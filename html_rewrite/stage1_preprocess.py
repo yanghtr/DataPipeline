@@ -27,6 +27,7 @@ from .config import HtmlRewriteConfig
 from .preprocess import PreprocessStats, preprocess
 from .preprocess.analysis import write_plots, write_reject_reason_report, write_summary
 from .preprocess.filtering import decide_keep
+from .preprocess.parser import ensure_lxml_available
 
 
 def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
@@ -46,6 +47,9 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     reject_reason_report_path = summary_log_path.with_name(
         f"{summary_log_path.stem}_reject_reasons.json"
     )
+
+    # 缺关键解析依赖时直接停止，避免静默降级或整批错误 reject。
+    ensure_lxml_available()
 
     # ── 1. 读取全量输入 ───────────────────────────────────────────────────────
     records: list[dict] = []
@@ -120,6 +124,7 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
                 "id": rec_id,
                 "status": "kept" if decision.keep else "rejected",
                 "reject_reason": decision.reason,
+                "reject_details": decision.details,
                 "stats": stats_dict,
             }
             with collect_lock:
@@ -136,6 +141,7 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
                         "id": rec_id,
                         "_meta": meta,
                         "reject_reason": decision.reason,
+                        "reject_details": decision.details,
                         "preprocess_stats": stats_dict,
                     }
             with count_lock:
@@ -151,12 +157,20 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
                     "id": rec_id,
                     "status": "rejected",
                     "reject_reason": "preprocess_exception",
+                    "reject_details": {
+                        "rule": "preprocess_exception",
+                        "error": str(exc),
+                    },
                     "stats": fallback_stats,
                 }
                 new_rejected[orig_idx] = {
                     "id": rec_id,
                     "_meta": meta,
                     "reject_reason": "preprocess_exception",
+                    "reject_details": {
+                        "rule": "preprocess_exception",
+                        "error": str(exc),
+                    },
                     "preprocess_stats": fallback_stats,
                     "error": str(exc),
                 }
@@ -192,6 +206,7 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
                 "id": rec_id,
                 "status": "kept",
                 "reject_reason": None,
+                "reject_details": None,
                 "stats": existing_kept[rec_id].get("preprocess_stats", {}),
             }
         elif rec_id in existing_rejected:
@@ -200,6 +215,7 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
                 "id": rec_id,
                 "status": "rejected",
                 "reject_reason": existing_rejected[rec_id].get("reject_reason"),
+                "reject_details": existing_rejected[rec_id].get("reject_details"),
                 "stats": existing_rejected[rec_id].get("preprocess_stats", {}),
             }
 

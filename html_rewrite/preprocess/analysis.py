@@ -17,7 +17,7 @@ def write_reject_reason_report(
     report_path: Path,
     stats_entries: list[dict],
 ) -> dict:
-    """单独写出 reject 原因汇总，便于快速定位 keep=0 的原因。"""
+    """单独写出 reject 原因明细，直接列出阈值、id 和对应长度。"""
     grouped: dict[str, list[dict]] = {}
     for entry in stats_entries:
         if entry.get("status") != "rejected":
@@ -31,21 +31,25 @@ def write_reject_reason_report(
     }
 
     for reason, entries in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0])):
-        cleaned_chars = [
-            e.get("stats", {}).get("cleaned_chars", 0)
-            for e in entries
-            if e.get("stats", {}).get("cleaned_chars") is not None
-        ]
-        visible_text_chars = [
-            e.get("stats", {}).get("visible_text_chars", 0)
-            for e in entries
-            if e.get("stats", {}).get("visible_text_chars") is not None
-        ]
+        first_details = entries[0].get("reject_details") or {}
         report["reasons"][reason] = {
             "count": len(entries),
-            "sample_ids": [e.get("id", "") for e in entries[:20]],
-            "cleaned_chars": _describe_distribution(cleaned_chars),
-            "visible_text_chars": _describe_distribution(visible_text_chars),
+            "rule": first_details.get("rule"),
+            "threshold_field": first_details.get("threshold_field"),
+            "threshold_value": first_details.get("threshold_value"),
+            "records": [
+                {
+                    "id": entry.get("id", ""),
+                    "actual_cleaned_chars": entry.get("reject_details", {}).get(
+                        "actual_cleaned_chars",
+                        entry.get("stats", {}).get("cleaned_chars"),
+                    ),
+                    "visible_text_chars": entry.get("stats", {}).get("visible_text_chars"),
+                    "original_chars": entry.get("stats", {}).get("original_chars"),
+                    "details": entry.get("reject_details") or {},
+                }
+                for entry in entries
+            ],
         }
 
     report_path.parent.mkdir(parents=True, exist_ok=True)

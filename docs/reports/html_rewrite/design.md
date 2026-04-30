@@ -46,6 +46,10 @@ output JSONL  (含 meta + preprocessed_html + output_html + preprocess_stats)
 
 两个阶段通过中间文件完全解耦，各自支持独立 resume。Stage 1 无网络依赖，Stage 2 只读取 Stage 1 的 keep 样本，不重跑预处理。reject 样本不进入 Stage 2，但必须保留日志，避免“静默丢数”。
 
+补充约束：
+- `lxml` 是 Stage 1 的硬依赖。
+- 如果当前环境缺少 `lxml`，应直接报错停止，不允许静默 fallback 到 `html.parser` 或其它 parser。
+
 ---
 
 ## 3. 顺序保证机制
@@ -309,6 +313,36 @@ application/pdf → .pdf
 
 reject 文件只保留回溯所需字段，不写入完整 `preprocessed_html`，避免把本来要省下的超长内容再次写回磁盘。
 
+### Stage 1 reject 原因明细（`*_reject_reasons.json`）
+
+reject summary 不再使用 `p50/p90/p95` 这类摘要描述失败样本，而是按 reason 直接列出规则阈值和失败记录，便于排查环境差异或规则误杀。
+
+```json
+{
+  "total_rejected": 3,
+  "reasons": {
+    "too_long_after_preprocess": {
+      "count": 3,
+      "threshold_field": "max_preprocessed_chars",
+      "threshold_value": 65536,
+      "records": [
+        {
+          "id": "https://example.com/a",
+          "actual_cleaned_chars": 80958,
+          "visible_text_chars": 4104,
+          "original_chars": 121004,
+          "details": {
+            "threshold_field": "max_preprocessed_chars",
+            "threshold_value": 65536,
+            "actual_cleaned_chars": 80958
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
 ### Stage 2 输出（output JSONL）
 
 在 Stage 1 字段基础上新增：
@@ -452,6 +486,8 @@ print(f"inline script 长度 p50={sorted(all_script_chars)[len(all_script_chars)
   "compression_ratio": { "p50": 0.61, "p90": 0.94 }
 }
 ```
+
+同时输出 `*_reject_reasons.json`，专门用于排查“为什么这一批全被 reject”这类问题。
 
 建议同时输出这些图，便于直接观察阈值位置，而不是只看分位数：
 

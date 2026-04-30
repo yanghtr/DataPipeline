@@ -21,11 +21,13 @@ pip install beautifulsoup4>=4.12 lxml>=5.0 matplotlib>=3.8
 
 ### 2. 配置文件
 
-复制并编辑配置：
+默认配置文件路径：
 
 ```bash
-cp html_rewrite/configs/default_local.yaml html_rewrite/configs/my_config.yaml
+html_rewrite/configs/default_local.yaml
 ```
+
+直接编辑这个文件即可；下面的命令也默认使用它。
 
 必填字段：
 
@@ -42,20 +44,20 @@ output_path: "/path/to/output.jsonl"               # Stage 2 最终输出
 
 ```bash
 # Stage 1：仅预处理（离线，无需 API，可调整阈值反复运行）
-python -m html_rewrite.main --config html_rewrite/configs/my_config.yaml --stage preprocess
+python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage preprocess
 
 # 检查 logs/html_rewrite_stats.jsonl / logs/html_rewrite_summary.json / logs/html_rewrite_plots/ 后，如需调整阈值：
-python -m html_rewrite.main --config html_rewrite/configs/my_config.yaml --stage preprocess --no-resume
+python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage preprocess --no-resume
 
 # Stage 2：模型改写（需要 API 可用）
-python -m html_rewrite.main --config html_rewrite/configs/my_config.yaml --stage rewrite
+python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage rewrite
 
 # 全流程一次跑完
-python -m html_rewrite.main --config html_rewrite/configs/my_config.yaml --stage all
+python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage all
 
 # 调试单条（取第 0 条，默认）
-python -m html_rewrite.demo --config html_rewrite/configs/my_config.yaml --stage preprocess
-python -m html_rewrite.demo --config html_rewrite/configs/my_config.yaml --stage rewrite --index 2
+python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --stage preprocess
+python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --stage rewrite --index 2
 ```
 
 Stage 1 跑完后，通常会看到这些文件或目录：
@@ -65,15 +67,16 @@ Stage 1 跑完后，通常会看到这些文件或目录：
 - `reject_log_path`：被过滤掉的样本
 - `summary_log_path`：聚合统计摘要
 - `stats_plot_dir`：直方图和 reject 原因柱状图
+- `summary_log_path` 同目录下的 `*_reject_reasons.json`：按 reject 原因展开的明细日志
 
 常用调试方式：
 
 ```bash
 # 先只跑前 5 条，确认过滤和分布图输出正常
-python -m html_rewrite.main --config html_rewrite/configs/my_config.yaml --stage preprocess --limit 5
+python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage preprocess --limit 5
 
 # 查看单条预处理结果和统计
-python -m html_rewrite.demo --config html_rewrite/configs/my_config.yaml --stage preprocess --index 0
+python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --stage preprocess --index 0
 ```
 
 ## 配置参数说明
@@ -162,6 +165,13 @@ python -m html_rewrite.demo --config html_rewrite/configs/my_config.yaml --stage
 - `invalid_or_empty_html`
 - `preprocess_exception`
 
+`*_reject_reasons.json` 会把 reject 按 reason 分组，并直接列出：
+
+- `threshold_field`
+- `threshold_value`
+- `records`
+  每条记录包含 `id`、`actual_cleaned_chars`、`visible_text_chars`、`original_chars` 和 `details`
+
 ### Stage 2 输出（output JSONL）
 
 在 Stage 1 字段基础上新增：
@@ -207,6 +217,8 @@ Stage 1 会额外生成：
 - `reject_reason` 柱状图
 
 如果环境里没有 `matplotlib`，Stage 1 仍然会成功完成，只是跳过图片输出。
+
+如果环境里缺少 `lxml`，Stage 1 会直接报错停止；不会静默 fallback 到其他 parser。
 
 ## 媒体 placeholder 格式
 
