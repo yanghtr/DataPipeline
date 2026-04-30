@@ -117,7 +117,7 @@ CSS 应服务于还原原始布局、视觉层级和组件关系，不要为了�
 不要复制原站脚本。
 不要保留 analytics、tracking、hydration、cookie、chat widget 或复杂运行时逻辑。
 
-只有当页面核心交互必须依赖 JS 时，才写少量原生 JS。能用静态 HTML/CSS 表达的内容，优先静态化。
+只有在必要交互存在时，才写少量原生 JS，例如：mobile nav toggle，simple carousel， FAQ accordion, tabs。
 
 ### 6. 媒体资源处理
 
