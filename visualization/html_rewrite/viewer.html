@@ -191,7 +191,7 @@ table {
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
-  width: max-content;
+  width: 100%;
   min-width: 100%;
 }
 th, td {
@@ -344,6 +344,8 @@ th, td {
 .render-cell {
   padding: 10px;
   background: #eef2f7;
+  width: 100%;
+  min-width: 0;
 }
 .render-card {
   background: #fff;
@@ -408,6 +410,9 @@ th, td {
 
 .card-panels {
   background: #fff;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 .preview-panel {
   display: block;
@@ -417,12 +422,22 @@ th, td {
   border-top: 1px solid #e2e8f0;
   background: #020617;
   color: #dbeafe;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  contain: inline-size;
 }
 .response-panel {
   display: none;
   border-top: 1px solid #e2e8f0;
   background: #020617;
   color: #dbeafe;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  contain: inline-size;
 }
 .render-card[data-view="source"] .preview-panel { display: none; }
 .render-card[data-view="source"] .source-panel { display: block; }
@@ -469,6 +484,7 @@ th, td {
   width: 100%;
   max-width: 100%;
   min-width: 0;
+  overflow: hidden;
 }
 .code-toolbar {
   display: flex;
@@ -507,11 +523,14 @@ th, td {
   max-width: 100%;
   height: var(--preview-frame-height);
   min-height: 280px;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: auto;
 }
 .code-lines {
   width: 100%;
   min-width: 100%;
+  max-width: 100%;
 }
 .code-line {
   display: grid;
@@ -519,6 +538,7 @@ th, td {
   align-items: stretch;
   width: 100%;
   min-width: 0;
+  max-width: 100%;
 }
 .code-line:hover {
   background: rgba(148, 163, 184, 0.08);
@@ -549,12 +569,15 @@ th, td {
   min-width: 0;
 }
 .render-card[data-code-wrap="off"] .code-lines {
+  display: inline-block;
   width: max-content;
   min-width: 100%;
+  max-width: none;
 }
 .render-card[data-code-wrap="off"] .code-line {
   width: max-content;
   min-width: 100%;
+  max-width: none;
   grid-template-columns: 56px auto;
 }
 .render-card[data-code-wrap="off"] .code-line-text {
@@ -604,16 +627,24 @@ th, td {
 .badge-live         { background: #dbeafe; color: #1d4ed8; }
 .badge-proxy        { background: #ede9fe; color: #6d28d9; }
 .badge-finish       { background: #f3f4f6; color: #374151; }
-.cell-tokens,
+.cell-tokenmeta,
 .cell-htmlmeta,
 .cell-respmeta,
+.cell-reasonmeta,
+.cell-usagehint,
 .cell-model {
   font-size: 10px;
   color: #64748b;
 }
 .cell-htmlmeta,
-.cell-respmeta { white-space: nowrap; }
+.cell-respmeta,
+.cell-tokenmeta,
+.cell-reasonmeta { white-space: nowrap; }
 .cell-htmlmeta { margin-left: auto; }
+.cell-usagehint {
+  flex-basis: 100%;
+  color: #475569;
+}
 
 /* ── Empty / loading ─────────────────────────────────────── */
 #loading {
@@ -754,6 +785,10 @@ function formatCount(n) {
   return n == null ? '' : `${fmtNum(n)} chars`;
 }
 
+function formatTokCount(n) {
+  return n == null ? '' : `${fmtNum(n)} tok`;
+}
+
 function highlightHtmlAttributes(raw) {
   const attrRe = /([^\s=/>]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
   let out = '';
@@ -883,6 +918,7 @@ function normalizeVisibilityState() {
 
 function applyResponsiveLayout() {
   const container = document.getElementById('scroll-container');
+  const table = document.getElementById('main-table');
   const previewCols = getVisibleDataColumns().length + (state.showLiveColumn ? 1 : 0);
   const infoWidth = state.showInfoColumn ? 280 : 0;
   const containerWidth = Math.max(container.clientWidth || 0, 640);
@@ -906,6 +942,9 @@ function applyResponsiveLayout() {
   document.documentElement.style.setProperty('--preview-viewport-width', String(state.previewViewport.width));
   document.documentElement.style.setProperty('--preview-viewport-height', String(state.previewViewport.height));
   document.documentElement.style.setProperty('--preview-scale', scale.toFixed(4));
+  const computedTableWidth = Math.max(containerWidth, infoWidth + previewCols * previewColWidth);
+  table.style.width = `${computedTableWidth}px`;
+  table.style.minWidth = `${computedTableWidth}px`;
   document.getElementById('scale-info').textContent =
     `缩放 ${(scale * 100).toFixed(0)}% · ${state.previewViewport.width}×${state.previewViewport.height}`;
 }
@@ -1030,19 +1069,44 @@ function buildPreviewCard({
   note,
   badges,
   model,
-  tokens,
+  promptTokens,
+  completionTokens,
+  promptCachedTokens,
+  responseContentCharCount,
+  reasoningCharCount,
+  reasoningTokens,
+  apiCompletionIncludesReasoning,
   htmlCharCount,
   htmlSizeLabel,
-  responseCharCount,
 }) {
   const badgeHtml = (badges || []).join('');
   const modelHtml = model ? `<span class="cell-model">${escapeHtml(model)}</span>` : '';
-  const tokenHtml = tokens ? `<span class="cell-tokens">${escapeHtml(tokens)}</span>` : '';
+  const promptTokenHtml = promptTokens != null
+    ? `<span class="cell-tokenmeta" title="API usage.prompt_tokens。包含 system prompt、user 指令包装文本，以及 preprocessed_html。">↑ 输入 ${escapeHtml(formatTokCount(promptTokens))}</span>`
+    : '';
+  const completionTokenTitle = apiCompletionIncludesReasoning
+    ? 'API usage.completion_tokens。当前记录检测到 reasoning；按当前 vLLM / Qwen3 thinking 模式，应视为 thinking + 最终正文的总生成 token。'
+    : 'API usage.completion_tokens。当前记录未检测到单独 reasoning，通常可近似理解为最终正文的生成 token。';
+  const completionTokenHtml = completionTokens != null
+    ? `<span class="cell-tokenmeta" title="${escapeHtml(completionTokenTitle)}">↓ API输出 ${escapeHtml(formatTokCount(completionTokens))}</span>`
+    : '';
+  const promptCacheHtml = promptCachedTokens != null
+    ? `<span class="cell-tokenmeta" title="若后端支持 prompt cache，这是命中的 cached prompt tokens。">缓存 ${escapeHtml(formatTokCount(promptCachedTokens))}</span>`
+    : '';
+  const reasoningTokenHtml = reasoningTokens != null
+    ? `<span class="cell-tokenmeta" title="若后端 usage 提供了 reasoning token 细分，这里显示该值。">thinking ${escapeHtml(formatTokCount(reasoningTokens))}</span>`
+    : '';
   const htmlMeta = htmlCharCount != null
     ? `<span class="cell-htmlmeta">HTML ${escapeHtml(formatCount(htmlCharCount))}${htmlSizeLabel ? ` · ${escapeHtml(htmlSizeLabel)}` : ''}</span>`
     : '';
-  const responseMeta = responseCharCount
-    ? `<span class="cell-respmeta">回复 ${escapeHtml(formatCount(responseCharCount))}</span>`
+  const responseMeta = responseContentCharCount
+    ? `<span class="cell-respmeta">正文 ${escapeHtml(formatCount(responseContentCharCount))}</span>`
+    : '';
+  const reasoningMeta = reasoningCharCount
+    ? `<span class="cell-reasonmeta">thinking ${escapeHtml(formatCount(reasoningCharCount))}</span>`
+    : '';
+  const usageHint = completionTokens != null
+    ? `<span class="cell-usagehint">${apiCompletionIncludesReasoning ? '当前后端在 reasoning 模式下，↓ API输出 通常包含 thinking + 正文。' : '当前记录未检测到 thinking；↓ API输出 通常约等于正文输出。'}</span>`
     : '';
   const responseBtn = responseUrl
     ? '<button class="view-btn" type="button" data-view="response">完整回复</button>'
@@ -1121,9 +1185,14 @@ function buildPreviewCard({
       <div class="cell-meta">
         ${badgeHtml}
         ${modelHtml}
-        ${tokenHtml}
+        ${promptTokenHtml}
+        ${completionTokenHtml}
+        ${promptCacheHtml}
+        ${reasoningTokenHtml}
+        ${reasoningMeta}
         ${responseMeta}
         ${htmlMeta}
+        ${usageHint}
       </div>
     </div>`;
 }
@@ -1202,10 +1271,15 @@ function buildRows(rows) {
             '<span class="cell-badge badge-proxy">proxy</span>',
           ],
           model: '',
-          tokens: '',
+          promptTokens: null,
+          completionTokens: null,
+          promptCachedTokens: null,
+          responseContentCharCount: 0,
+          reasoningCharCount: 0,
+          reasoningTokens: null,
+          apiCompletionIncludesReasoning: false,
           htmlCharCount: null,
           htmlSizeLabel: '',
-          responseCharCount: 0,
         });
       }
       tr.appendChild(tdLive);
@@ -1226,9 +1300,6 @@ function buildRows(rows) {
         const renderUrl = `/render/${col.idx}/${row.row_idx}`;
         const fieldBadgeClass = col.field === 'preprocessed_html' ? 'badge-preprocessed' : 'badge-output';
         const fieldLabel = col.field === 'preprocessed_html' ? 'preprocessed' : 'output';
-        const tokenInfo = cell.prompt_tokens != null
-          ? `↑${fmtNum(cell.prompt_tokens)} ↓${fmtNum(cell.completion_tokens)}`
-          : '';
         const finishBadge = cell.finish_reason
           ? `<span class="cell-badge badge-finish">${escapeHtml(cell.finish_reason)}</span>`
           : '';
@@ -1245,10 +1316,15 @@ function buildRows(rows) {
             finishBadge,
           ].filter(Boolean),
           model: cell.model || '',
-          tokens: tokenInfo,
+          promptTokens: cell.prompt_tokens,
+          completionTokens: cell.completion_tokens,
+          promptCachedTokens: cell.prompt_cached_tokens,
+          responseContentCharCount: cell.response_content_len || 0,
+          reasoningCharCount: cell.reasoning_len || 0,
+          reasoningTokens: cell.reasoning_tokens,
+          apiCompletionIncludesReasoning: Boolean(cell.api_completion_includes_reasoning),
           htmlCharCount: cell.html_char_len,
           htmlSizeLabel: fmtKB(cell.html_len),
-          responseCharCount: cell.response_len || 0,
         });
       }
       tr.appendChild(td);

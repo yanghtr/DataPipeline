@@ -178,13 +178,29 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 
 ```json
 {
+  "response": "...模型 message.content 原文...",
+  "reasoning": "...模型 reasoning / reasoning_content（如果后端提供）...",
   "output_html": "<!DOCTYPE html>...",
+  "usage": { "prompt_tokens": 12000, "completion_tokens": 8000 },
   "model": "your-model",
   "prompt_tokens": 12000,
   "completion_tokens": 8000,
   "finish_reason": "stop"
 }
 ```
+
+说明：
+
+- `response`：模型最终 `message.content` 文本，不等于 `output_html`
+- `reasoning`：若后端是 reasoning 模型并单独返回 thinking，这里保存该文本
+- `output_html`：从 `response` 中抽取出来的最终 HTML
+- `usage.prompt_tokens / completion_tokens`：后端 API 返回的 usage 统计
+
+对于当前默认本地后端（`http://localhost:8000/v1/chat/completions`，通常是 vLLM OpenAI-compatible server）：
+
+- Qwen3 系列 reasoning 默认开启，除非显式传 `chat_template_kwargs.enable_thinking=false`
+- reasoning 模式下，`completion_tokens` 应视为后端 API 口径的总输出 token；若当前记录存在 `reasoning`，通常表示它包含 `thinking + 最终正文`
+- 若后端未来返回 `completion_tokens_details.reasoning_tokens` 等细分字段，建议优先使用这些字段做更精确拆分
 
 ## Stage 1 统计与可视化
 

@@ -440,6 +440,11 @@ def _compress_stats(stats: dict) -> dict:
 
 def _extract_meta(record: dict) -> dict:
     meta = record.get("_meta", {})
+    usage = record.get("usage", {}) if isinstance(record.get("usage"), dict) else {}
+    completion_details = usage.get("completion_tokens_details", {})
+    prompt_details = usage.get("prompt_tokens_details", {})
+    reasoning_text = record.get("reasoning") or ""
+    response_text = record.get("response") or ""
     return {
         "url": meta.get("url") or record.get("id", ""),
         "final_url": meta.get("final_url", ""),
@@ -447,6 +452,16 @@ def _extract_meta(record: dict) -> dict:
         "model": record.get("model", ""),
         "prompt_tokens": record.get("prompt_tokens"),
         "completion_tokens": record.get("completion_tokens"),
+        "prompt_tokens_details": prompt_details if isinstance(prompt_details, dict) else {},
+        "completion_tokens_details": completion_details if isinstance(completion_details, dict) else {},
+        "reasoning": reasoning_text,
+        "reasoning_len": len(reasoning_text) if reasoning_text else 0,
+        "response_len": len(response_text) if response_text else 0,
+        "reasoning_tokens": (
+            record.get("reasoning_tokens")
+            or (completion_details.get("reasoning_tokens") if isinstance(completion_details, dict) else None)
+            or usage.get("reasoning_tokens")
+        ),
         "finish_reason": record.get("finish_reason", ""),
         "preprocess_stats": _compress_stats(record.get("preprocess_stats", {})),
     }
@@ -513,6 +528,43 @@ def _extract_response_text(record: dict) -> str | None:
     return None
 
 
+def _extract_reasoning_text(record: dict) -> str | None:
+    reasoning = record.get("reasoning")
+    if reasoning:
+        return _stringify_textish(reasoning)
+
+    message = record.get("message")
+    if isinstance(message, dict):
+        reasoning = message.get("reasoning") or message.get("reasoning_content")
+        if reasoning:
+            return _stringify_textish(reasoning)
+
+    choices = record.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                reasoning = message.get("reasoning") or message.get("reasoning_content")
+                if reasoning:
+                    return _stringify_textish(reasoning)
+    return None
+
+
+def _compose_full_reply_text(record: dict) -> str | None:
+    response_text = _extract_response_text(record)
+    reasoning_text = _extract_reasoning_text(record)
+
+    if reasoning_text and response_text:
+        return (
+            "=== reasoning ===\n"
+            f"{reasoning_text}\n\n"
+            "=== final_response ===\n"
+            f"{response_text}"
+        )
+    return reasoning_text or response_text
+
+
 def load_column(
     path: str,
     field: str,
@@ -565,9 +617,9 @@ def load_column(
         id_order.append(rec_id)
         html_data[rec_id] = obj[field]
         meta[rec_id] = _extract_meta(obj)
-        response_text = _extract_response_text(obj)
-        if response_text:
-            response_data[rec_id] = response_text
+        full_reply_text = _compose_full_reply_text(obj)
+        if full_reply_text:
+            response_data[rec_id] = full_reply_text
 
     col = Column(path, field, label, id_order, meta, html_data, response_data, total)
     logger.info(f"[load] 完成: {col.loaded:,} 条（文件总行 {total:,}）label={label!r}")
@@ -823,6 +875,11 @@ def api_rows():
                 if rec_id in col.html_data:
                     meta = col.meta.get(rec_id, {})
                     response_text = col.response_data.get(rec_id, "")
+                    reasoning_len = meta.get("reasoning_len") or 0
+                    response_len = meta.get("response_len") or 0
+                    reasoning_tokens = meta.get("reasoning_tokens")
+                    completion_details = meta.get("completion_tokens_details", {})
+                    prompt_details = meta.get("prompt_tokens_details", {})
                     cells.append({
                         "has_html": True,
                         "html_len": len(col.html_data[rec_id]),
@@ -830,9 +887,23 @@ def api_rows():
                         "model": meta.get("model", ""),
                         "prompt_tokens": meta.get("prompt_tokens"),
                         "completion_tokens": meta.get("completion_tokens"),
+                        "prompt_cached_tokens": (
+                            prompt_details.get("cached_tokens")
+                            if isinstance(prompt_details, dict)
+                            else None
+                        ),
+                        "reasoning_tokens": reasoning_tokens,
+                        "reasoning_len": reasoning_len,
+                        "response_content_len": response_len,
                         "finish_reason": meta.get("finish_reason", ""),
                         "has_response": bool(response_text),
                         "response_len": len(response_text) if response_text else 0,
+                        "api_completion_includes_reasoning": bool(reasoning_len),
+                        "completion_accepted_prediction_tokens": (
+                            completion_details.get("accepted_prediction_tokens")
+                            if isinstance(completion_details, dict)
+                            else None
+                        ),
                     })
                 else:
                     cells.append({"has_html": False})

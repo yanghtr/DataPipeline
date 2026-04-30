@@ -44,6 +44,19 @@ WSL 下从 Windows 浏览器访问，加 `--host 0.0.0.0`，然后访问 `http:/
 
 代码视图默认保持单行并显示横向滚动条；点击 `Break Line` 可切换为自动换行。
 
+卡片底部统计口径：
+
+- `↑ 输入 xxx tok`：API `usage.prompt_tokens`，包含 system prompt、user 包装文本和 `preprocessed_html`
+- `↓ API输出 xxx tok`：API `usage.completion_tokens`
+- `thinking xxx chars`：单独保存下来的 reasoning 文本长度
+- `正文 xxx chars`：`response`，即 `message.content` 的字符长度
+- `HTML xxx chars`：最终 `output_html` 的字符长度
+
+对于当前默认本地后端（通常是 vLLM OpenAI-compatible server）：
+
+- 如果当前记录检测到 `thinking`，则 `↓ API输出` 通常应理解为 `thinking + 正文` 的总输出 token
+- 如果后端未来返回 `completion_tokens_details.reasoning_tokens` 等细分字段，界面会优先补充显示这些更细的 token 统计
+
 顶部工具栏支持：
 
 - 切换每页条数

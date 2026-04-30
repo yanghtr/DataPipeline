@@ -152,6 +152,7 @@ def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
                 "output_html": output_html,
                 "preprocess_stats": rec.get("preprocess_stats", {}),
                 "model": resp_data.get("model", cfg.model),
+                "usage": usage,
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
                 "finish_reason": resp_data["choices"][0].get("finish_reason"),
