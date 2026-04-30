@@ -190,6 +190,7 @@ a { color: inherit; }
 table {
   border-collapse: separate;
   border-spacing: 0;
+  table-layout: fixed;
   width: max-content;
   min-width: 100%;
 }
@@ -204,6 +205,7 @@ th, td {
 .col-info {
   width: var(--info-col-width);
   min-width: var(--info-col-width);
+  max-width: var(--info-col-width);
   position: sticky;
   left: 0;
   z-index: 15;
@@ -294,6 +296,7 @@ th, td {
 .col-preview {
   width: var(--preview-col-width);
   min-width: var(--preview-col-width);
+  max-width: var(--preview-col-width);
   background: #f8fafc;
 }
 .col-header {
@@ -347,6 +350,8 @@ th, td {
   border: 1px solid #d8e2ef;
   border-radius: 14px;
   overflow: hidden;
+  width: 100%;
+  max-width: 100%;
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
 }
 .card-topbar {
@@ -461,6 +466,8 @@ th, td {
 }
 
 .code-panel {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
 .code-toolbar {
@@ -497,18 +504,21 @@ th, td {
 }
 .code-scroll {
   width: 100%;
+  max-width: 100%;
   height: var(--preview-frame-height);
   min-height: 280px;
   overflow: auto;
 }
 .code-lines {
-  width: max-content;
+  width: 100%;
   min-width: 100%;
 }
 .code-line {
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr);
   align-items: stretch;
+  width: 100%;
+  min-width: 0;
 }
 .code-line:hover {
   background: rgba(148, 163, 184, 0.08);
@@ -530,21 +540,30 @@ th, td {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.7;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
 }
 .code-line-text-inner {
   display: block;
-  min-width: max-content;
-}
-.render-card[data-code-wrap="on"] .code-lines {
-  width: 100%;
-}
-.render-card[data-code-wrap="on"] .code-line-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.render-card[data-code-wrap="on"] .code-line-text-inner {
   min-width: 0;
+}
+.render-card[data-code-wrap="off"] .code-lines {
+  width: max-content;
+  min-width: 100%;
+}
+.render-card[data-code-wrap="off"] .code-line {
+  width: max-content;
+  min-width: 100%;
+  grid-template-columns: 56px auto;
+}
+.render-card[data-code-wrap="off"] .code-line-text {
+  white-space: pre;
+  word-break: normal;
+  overflow: visible;
+}
+.render-card[data-code-wrap="off"] .code-line-text-inner {
+  min-width: max-content;
 }
 .tok-tag { color: #7dd3fc; }
 .tok-attr { color: #fbbf24; }
@@ -1034,7 +1053,7 @@ function buildPreviewCard({
       <div
         class="render-card"
         data-view="preview"
-        data-code-wrap="off"
+        data-code-wrap="on"
         data-source-url="${escapeHtml(sourceUrl || '')}"
         data-source-state="idle"
         data-response-url="${escapeHtml(responseUrl || '')}"
@@ -1074,9 +1093,9 @@ function buildPreviewCard({
               <div class="code-toolbar">
                 <div>
                   <div class="code-toolbar-title">HTML 源码</div>
-                  <div class="code-toolbar-hint">默认保持单行并显示横向滚动条。</div>
+                  <div class="code-toolbar-hint">默认自动换行；切到 No Wrap 后只在下方代码区横向滚动。</div>
                 </div>
-                <button class="code-wrap-btn" type="button" data-wrap-target="source">Break Line</button>
+                <button class="code-wrap-btn" type="button" data-wrap-target="source">No Wrap</button>
               </div>
               <div class="code-scroll">
                 <div class="source-content">点击 “HTML” 查看源码…</div>
@@ -1088,9 +1107,9 @@ function buildPreviewCard({
               <div class="code-toolbar">
                 <div>
                   <div class="code-toolbar-title">完整模型回复</div>
-                  <div class="code-toolbar-hint">默认保持单行并显示横向滚动条。</div>
+                  <div class="code-toolbar-hint">默认自动换行；切到 No Wrap 后只在下方代码区横向滚动。</div>
                 </div>
-                <button class="code-wrap-btn" type="button" data-wrap-target="response">Break Line</button>
+                <button class="code-wrap-btn" type="button" data-wrap-target="response">No Wrap</button>
               </div>
               <div class="code-scroll">
                 <div class="response-content">点击 “完整回复” 查看模型原始输出…</div>
@@ -1268,7 +1287,7 @@ function renderCurrentPage() {
   buildVisibilityPanel();
   buildHeader();
   buildRows(state.currentRows);
-  document.querySelectorAll('.render-card').forEach(card => setCardWrapState(card, false));
+  document.querySelectorAll('.render-card').forEach(card => setCardWrapState(card, true));
   updateColumnCount();
   updateEmptyState();
   applyResponsiveLayout();
