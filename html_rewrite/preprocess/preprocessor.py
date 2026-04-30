@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+from bs4 import Comment
 from bs4 import BeautifulSoup
 
 from html_rewrite.config import HtmlRewriteConfig
 from .stats import PreprocessStats
 from . import media, scripts, styles, forms, comments, formatter
+
+_NON_VISIBLE_PARENTS = {"script", "style", "noscript", "template", "head", "title", "meta"}
+
+
+def _count_visible_text_chars(soup: BeautifulSoup) -> int:
+    parts: list[str] = []
+    for text_node in soup.find_all(string=True):
+        if isinstance(text_node, Comment):
+            continue
+        parent = getattr(text_node, "parent", None)
+        if parent is not None and getattr(parent, "name", None) in _NON_VISIBLE_PARENTS:
+            continue
+        text = str(text_node).strip()
+        if text:
+            parts.append(text)
+    return len(" ".join(parts))
 
 
 def preprocess(html: str, cfg: HtmlRewriteConfig) -> tuple[str, PreprocessStats]:
@@ -47,5 +64,6 @@ def preprocess(html: str, cfg: HtmlRewriteConfig) -> tuple[str, PreprocessStats]
     # 7. 格式标准化 + 序列化
     out_html = formatter.serialize(soup, stats.formatter)
     stats.cleaned_chars = len(out_html)
+    stats.visible_text_chars = _count_visible_text_chars(soup)
 
     return out_html, stats

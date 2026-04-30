@@ -25,6 +25,9 @@ class HtmlRewriteConfig:
     output_path: str = "html_rewrite_output.jsonl"         # Stage 2 最终输出
     call_log_path: str = "logs/api_calls.jsonl"            # API 调用原始记录
     stats_log_path: str = "logs/preprocess_stats.jsonl"    # 逐条预处理统计
+    reject_log_path: str = "logs/preprocess_rejects.jsonl" # Stage 1 reject 样本
+    summary_log_path: str = "logs/preprocess_summary.json" # Stage 1 聚合统计
+    stats_plot_dir: str = "logs/preprocess_plots"          # Stage 1 分布图目录
 
     # ── 生成参数（透传到 API payload）────────────────────────────────────────
     generation_params: dict = field(default_factory=dict)
@@ -38,6 +41,8 @@ class HtmlRewriteConfig:
     hidden_input_max_chars: int = 4096
     html_comment_max_chars: int = 1024
     inline_style_max_chars: int = 32768
+    min_preprocessed_chars: int = 1024   # 过空 gate
+    max_preprocessed_chars: int = 65536  # 超长 gate
     fetch_media_size: bool = False      # 是否尝试下载图片头部以获取尺寸（默认关闭）
 
     # ── 运行 ─────────────────────────────────────────────────────────────────

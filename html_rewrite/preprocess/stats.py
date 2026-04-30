@@ -75,6 +75,7 @@ class FormatterStats:
 class PreprocessStats:
     original_chars: int = 0
     cleaned_chars: int = 0
+    visible_text_chars: int = 0
 
     media: MediaStats = field(default_factory=MediaStats)
     scripts: ScriptStats = field(default_factory=ScriptStats)
@@ -95,6 +96,7 @@ class PreprocessStats:
         return {
             "original_chars": self.original_chars,
             "cleaned_chars": self.cleaned_chars,
+            "visible_text_chars": self.visible_text_chars,
             "compression_ratio": self.compression_ratio,
             "media": dataclasses.asdict(self.media),
             "scripts": dataclasses.asdict(self.scripts),
