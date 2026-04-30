@@ -1,0 +1,51 @@
+"""html_rewrite 流水线配置：dataclass 定义 + YAML 加载。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+
+@dataclass
+class HtmlRewriteConfig:
+    # ── API ──────────────────────────────────────────────────────────────────
+    url: str
+    api_key: str
+    model: str
+    timeout: float = 120.0
+    max_retries: int = 3
+    ssl_verify: bool = True
+    log_user: str = "html_rewrite"
+
+    # ── 路径 ─────────────────────────────────────────────────────────────────
+    input_path: str = ""                                    # 原始 JSONL（Stage 1 输入）
+    preprocessed_path: str = "preprocessed.jsonl"          # Stage 1 输出 / Stage 2 输入
+    output_path: str = "html_rewrite_output.jsonl"         # Stage 2 最终输出
+    call_log_path: str = "logs/api_calls.jsonl"            # API 调用原始记录
+    stats_log_path: str = "logs/preprocess_stats.jsonl"    # 逐条预处理统计
+
+    # ── 生成参数（透传到 API payload）────────────────────────────────────────
+    generation_params: dict = field(default_factory=dict)
+
+    # ── Prompt ───────────────────────────────────────────────────────────────
+    prompt_module: str = "html_rewrite"
+
+    # ── 预处理阈值 ────────────────────────────────────────────────────────────
+    inline_script_max_chars: int = 4096
+    json_payload_max_chars: int = 4096
+    hidden_input_max_chars: int = 4096
+    html_comment_max_chars: int = 1024
+    inline_style_max_chars: int = 32768
+    fetch_media_size: bool = False      # 是否尝试下载图片头部以获取尺寸（默认关闭）
+
+    # ── 运行 ─────────────────────────────────────────────────────────────────
+    num_workers: int = 16
+    resume: bool = True
+
+
+def load_config(path: Path) -> HtmlRewriteConfig:
+    """从 YAML 文件加载配置，返回强类型 HtmlRewriteConfig。"""
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return HtmlRewriteConfig(**raw)

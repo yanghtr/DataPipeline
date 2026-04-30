@@ -1,0 +1,36 @@
+# ── API ─────────────────────────────────────────────────────────────────────
+url: "http://localhost:8000/v1/chat/completions"
+api_key: "your-api-key-here"
+model: "your-model-name"
+
+timeout: 120.0
+max_retries: 3
+ssl_verify: false
+log_user: "html_rewrite"
+
+# ── 路径 ─────────────────────────────────────────────────────────────────────
+input_path: "/home/yanghaitao/Projects/Data/raw/FineWebEdu/samples10.jsonl"
+preprocessed_path: "/home/yanghaitao/Projects/Data/html_rewrite/preprocessed.jsonl"
+output_path: "/home/yanghaitao/Projects/Data/html_rewrite/output.jsonl"
+call_log_path: "logs/html_rewrite_api_calls.jsonl"
+stats_log_path: "logs/html_rewrite_stats.jsonl"
+
+# ── 预处理阈值 ────────────────────────────────────────────────────────────────
+inline_script_max_chars: 4096
+json_payload_max_chars: 4096
+hidden_input_max_chars: 4096
+html_comment_max_chars: 1024
+inline_style_max_chars: 32768
+fetch_media_size: false
+
+# ── 生成参数（透传给 API payload）────────────────────────────────────────────
+generation_params: {}
+#   temperature: 0.2
+#   max_tokens: 16384
+
+# ── Prompt ──────────────────────────────────────────────────────────────────
+prompt_module: "html_rewrite"
+
+# ── 运行时 ────────────────────────────────────────────────────────────────────
+num_workers: 8
+resume: true

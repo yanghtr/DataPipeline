@@ -3,3 +3,5 @@ hf_transfer>=0.1.6
 loguru>=0.7.0
 requests>=2.31.0
 pyyaml>=6.0
+beautifulsoup4>=4.12
+lxml>=5.0
