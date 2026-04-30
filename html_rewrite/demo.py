@@ -16,7 +16,7 @@ from loguru import logger
 
 from .config import load_config
 from .preprocess import preprocess
-from .stage2_rewrite import _load_prompt_module, _extract_html
+from .stage2_rewrite import _load_prompt_module, _extract_html, _extract_reasoning
 from utils.api_client import call_chat_completion
 
 
@@ -70,10 +70,15 @@ def main(argv: list[str] | None = None) -> None:
             log_user=cfg.log_user,
             extra_params=cfg.generation_params or None,
         )
-        raw = resp_data["choices"][0]["message"]["content"]
+        message = resp_data["choices"][0]["message"]
+        raw = message.get("content", "") or ""
+        reasoning = _extract_reasoning(message)
         output_html = _extract_html(raw)
         usage = resp_data.get("usage", {})
         logger.info(f"[demo] prompt_tokens={usage.get('prompt_tokens')}  completion_tokens={usage.get('completion_tokens')}")
+        if reasoning:
+            print("\n=== reasoning (前 2000 chars) ===")
+            print(reasoning[:2000])
         print("\n=== output_html (前 2000 chars) ===")
         print(output_html[:2000])
 

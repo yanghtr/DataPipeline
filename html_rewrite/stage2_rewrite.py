@@ -49,6 +49,17 @@ def _extract_html(content: str) -> str:
     return content.strip()
 
 
+def _extract_reasoning(message: dict) -> str | None:
+    """兼容 vLLM 新旧字段名，提取 reasoning 文本。"""
+    reasoning = message.get("reasoning")
+    if reasoning:
+        return reasoning
+    reasoning_content = message.get("reasoning_content")
+    if reasoning_content:
+        return reasoning_content
+    return None
+
+
 def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     """
     读取 cfg.preprocessed_path，并行调用模型，按原始顺序写入 cfg.output_path。
@@ -127,14 +138,17 @@ def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
                 extra_params=cfg.generation_params or None,
             )
             message: dict = resp_data["choices"][0]["message"]
-            output_html = _extract_html(message["content"])
+            response_text = message.get("content", "") or ""
+            reasoning_text = _extract_reasoning(message)
+            output_html = _extract_html(response_text)
             usage: dict = resp_data.get("usage", {})
 
             result = {
                 "id": rec_id,
                 "_meta": rec.get("_meta", {}),
                 "preprocessed_html": preprocessed_html,
-                "response": message.get("content", ""),
+                "response": response_text,
+                "reasoning": reasoning_text,
                 "output_html": output_html,
                 "preprocess_stats": rec.get("preprocess_stats", {}),
                 "model": resp_data.get("model", cfg.model),
