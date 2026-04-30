@@ -25,7 +25,7 @@ from loguru import logger
 
 from .config import HtmlRewriteConfig
 from .preprocess import PreprocessStats, preprocess
-from .preprocess.analysis import write_plots, write_summary
+from .preprocess.analysis import write_plots, write_reject_reason_report, write_summary
 from .preprocess.filtering import decide_keep
 
 
@@ -43,6 +43,9 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     reject_log_path = Path(cfg.reject_log_path)
     summary_log_path = Path(cfg.summary_log_path)
     stats_plot_dir = Path(cfg.stats_plot_dir)
+    reject_reason_report_path = summary_log_path.with_name(
+        f"{summary_log_path.stem}_reject_reasons.json"
+    )
 
     # ── 1. 读取全量输入 ───────────────────────────────────────────────────────
     records: list[dict] = []
@@ -230,14 +233,17 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     os.replace(tmp_stats, stats_log_path)
 
     ordered_stats_entries = [stats_by_idx[idx] for idx in sorted(stats_by_idx.keys())]
+    reject_reason_report = write_reject_reason_report(reject_reason_report_path, ordered_stats_entries)
     summary = write_summary(summary_log_path, ordered_stats_entries, cfg)
+    summary["reject_reason_report_path"] = str(reject_reason_report_path)
+    summary["reject_reasons_detailed"] = reject_reason_report.get("reasons", {})
     written_plots = write_plots(stats_plot_dir, ordered_stats_entries, cfg)
 
     if written_plots:
         summary["plots"] = written_plots
-        tmp_summary = summary_log_path.with_suffix(".tmp")
-        tmp_summary.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp_summary, summary_log_path)
+    tmp_summary = summary_log_path.with_suffix(".tmp")
+    tmp_summary.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_summary, summary_log_path)
 
     logger.info(
         f"[preprocess] 完成：keep={len(kept_by_idx):,}  reject={len(rejected_by_idx):,}  "

@@ -13,6 +13,49 @@ from loguru import logger
 from html_rewrite.config import HtmlRewriteConfig
 
 
+def write_reject_reason_report(
+    report_path: Path,
+    stats_entries: list[dict],
+) -> dict:
+    """单独写出 reject 原因汇总，便于快速定位 keep=0 的原因。"""
+    grouped: dict[str, list[dict]] = {}
+    for entry in stats_entries:
+        if entry.get("status") != "rejected":
+            continue
+        reason = entry.get("reject_reason") or "unknown"
+        grouped.setdefault(reason, []).append(entry)
+
+    report = {
+        "total_rejected": sum(len(entries) for entries in grouped.values()),
+        "reasons": {},
+    }
+
+    for reason, entries in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0])):
+        cleaned_chars = [
+            e.get("stats", {}).get("cleaned_chars", 0)
+            for e in entries
+            if e.get("stats", {}).get("cleaned_chars") is not None
+        ]
+        visible_text_chars = [
+            e.get("stats", {}).get("visible_text_chars", 0)
+            for e in entries
+            if e.get("stats", {}).get("visible_text_chars") is not None
+        ]
+        report["reasons"][reason] = {
+            "count": len(entries),
+            "sample_ids": [e.get("id", "") for e in entries[:20]],
+            "cleaned_chars": _describe_distribution(cleaned_chars),
+            "visible_text_chars": _describe_distribution(visible_text_chars),
+        }
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = report_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(report_path)
+    logger.info(f"[preprocess] reject reason report 已写出：{report_path}")
+    return report
+
+
 def write_summary(
     summary_log_path: Path,
     stats_entries: list[dict],
