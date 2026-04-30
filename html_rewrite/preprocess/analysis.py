@@ -39,7 +39,11 @@ def write_reject_reason_report(
             "threshold_value": first_details.get("threshold_value"),
             "records": [
                 {
+                    "record_uid": entry.get("record_uid", ""),
                     "id": entry.get("id", ""),
+                    "input_shard": entry.get("input_shard", ""),
+                    "input_index": entry.get("input_index"),
+                    "source_input_path": entry.get("source_input_path", ""),
                     "actual_cleaned_chars": entry.get("reject_details", {}).get(
                         "actual_cleaned_chars",
                         entry.get("stats", {}).get("cleaned_chars"),
@@ -78,12 +82,14 @@ def write_summary(
     original_chars = _collect_stat(stats_entries, "original_chars")
     visible_text_chars = _collect_stat(stats_entries, "visible_text_chars")
     compression_ratio = _collect_stat(stats_entries, "compression_ratio")
+    record_uid_check = _summarize_record_uids(stats_entries)
 
     summary = {
         "total_input": len(stats_entries),
         "kept": kept,
         "rejected": rejected,
         "reject_reasons": dict(sorted(reject_reasons.items())),
+        "record_uid_check": record_uid_check,
         "thresholds": {
             "inline_script_max_chars": cfg.inline_script_max_chars,
             "json_payload_max_chars": cfg.json_payload_max_chars,
@@ -330,6 +336,31 @@ def _build_rule_counts(stats_entries: list[dict]) -> dict:
             "checked": language_checked,
             "passed": language_passed,
         },
+    }
+
+
+def _summarize_record_uids(entries: Iterable[dict]) -> dict:
+    counts = Counter(
+        str(entry.get("record_uid", "")).strip()
+        for entry in entries
+        if str(entry.get("record_uid", "")).strip()
+    )
+    duplicate_items = [(uid, count) for uid, count in counts.items() if count > 1]
+    duplicate_items.sort(key=lambda item: (-item[1], item[0]))
+    total_records = sum(counts.values())
+    unique_record_uids = len(counts)
+    duplicate_record_uids = len(duplicate_items)
+    duplicate_records = sum(count - 1 for _, count in duplicate_items)
+    return {
+        "total_records": total_records,
+        "unique_record_uids": unique_record_uids,
+        "duplicate_record_uids": duplicate_record_uids,
+        "duplicate_records": duplicate_records,
+        "has_duplicates": duplicate_records > 0,
+        "duplicate_samples": [
+            {"record_uid": uid, "count": count}
+            for uid, count in duplicate_items[:20]
+        ],
     }
 
 

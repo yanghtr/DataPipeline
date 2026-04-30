@@ -51,7 +51,7 @@ run_root_dir/stage1/<shard>/
 [Stage 2: Rewrite]                   html_rewrite/stage2_rewrite.py
   ├─ 并发调用 OpenAI-compatible 模型
   ├─ 提取模型输出中的 clean HTML
-  └─ retry / resume / 有序写出
+  └─ retry / resume / append-only 写出
   │
   ▼
 run_root_dir/stage2/<shard>/
@@ -67,34 +67,48 @@ run_root_dir/
 
 两个阶段通过中间文件完全解耦，各自支持独立 resume。Stage 1 无网络依赖，Stage 2 只读取对应 shard 的 Stage 1 keep 样本，不重跑预处理。reject 样本不进入 Stage 2，但必须保留日志，避免“静默丢数”。
 
+补充说明：
+- Stage 1 和 Stage 2 现在都采用 append-only、无序写最终 JSONL。
+- 每条记录都会写出：
+  - `record_uid`：流水线内部唯一键，格式为 `<input_shard>:<input_index>`
+  - `id`：原始网页 id / url
+  - `_meta`：原始网页元信息
+  - `input_shard`、`input_index`、`source_input_path`：源输入定位信息
+- resume / 去重统一基于 `record_uid`；不再依赖输出是否与输入同序，也不依赖 `id` 在多输入文件场景下天然唯一。
+
 补充约束：
 - `lxml` 是 Stage 1 的硬依赖。
 - 如果当前环境缺少 `lxml`，应直接报错停止，不允许静默 fallback 到 `html.parser` 或其它 parser。
 
 ---
 
-## 3. 顺序保证机制
+## 3. 记录唯一性与 Resume 机制
 
-**问题**：`ThreadPoolExecutor` 的 `as_completed` 按完成顺序返回，导致输出无序，两阶段结果无法逐行对应。
-
-**方案**：并发计算 + 按原始索引排序 + 原子写出。
+**核心变化**：当前设计不再要求 Stage 1 / Stage 2 输出与输入严格同序，而是统一使用稳定唯一的 `record_uid` 做断点恢复和去重。
 
 ```
-for i, rec in enumerate(records):          # 保留原始索引
-    futures.append(exe.submit(process, i, rec))
-
-# 结果收集进 dict {orig_idx: result}（线程安全）
-# 全部完成后，sorted(results_by_idx.keys()) 写出
-# 写入临时文件 .tmp，os.replace() 原子覆盖目标文件
+record_uid = f"{input_shard}:{input_index:08d}"
 ```
 
-**Resume 与顺序兼容**：
-- run 级别用 `manifest.json` 固定“输入 shard → 输出 shard”映射，防止错误 resume 到另一批数据
-- shard 内 resume 时读取已有 keep / reject / output 文件，建立 `{id → record}` 映射
-- 只处理该 shard 内未完成的 `todo` 记录（仍记录 shard 内原始索引）
-- keep 文件与 reject 文件都各自保持 shard 内原始顺序；Stage 2 只消费对应 shard 的 keep 文件
+其中：
+- `input_shard`：由 `output_shard_name_template` 生成的 shard 名
+- `input_index`：该记录在原始输入文件中的 0-based 行号
 
-**原子性**：写入 `.tmp` 文件，`os.replace()` 原子覆盖，不会产生半完成文件。
+这样做的好处：
+- 不依赖网页 URL 是否唯一
+- 多输入文件场景下天然稳定
+- 两个阶段都可以直接 append-only 写最终文件
+- 中途停止后，只要扫描已有 JSONL 里的 `record_uid`，就能跳过已完成样本
+
+**Resume 规则**：
+- run 级别仍用 `manifest.json` 固定“输入 shard → 输出 shard”映射，防止错误 resume 到另一批数据
+- shard 内 resume 时扫描已有 keep / reject / output 文件，建立 `{record_uid → record}` 映射
+- `--no-resume` 时，清空该 shard 现有输出后重新跑
+
+**为什么保留 `id` 和 `_meta`**：
+- `id` 仍保留原始网页 id / url，方便下游按网页语义使用
+- `_meta` 继续原样保留，方便回溯 `final_url`、`page_type`、`crawl_time` 等信息
+- 但断点恢复和去重不再依赖它们，而是依赖 `record_uid`
 
 ---
 
@@ -209,8 +223,16 @@ resume: true
   - 同时维护 `run_root_dir/manifest.json` 与 `run_root_dir/aggregate/*.json`
 - 若未设置 `run_root_dir`，则回退到旧单文件输出模式，使用 `preprocessed_path`、`output_path` 等字段
 - 不论是 `input_paths` 还是模板展开模式，处理顺序都严格按 shard 列表顺序执行
-- `--limit`、resume、输出顺序、`demo --index` 都基于拼接后的全局顺序
+- `--limit` 仍基于拼接后的全局输入顺序
+- `demo --index` 在 `preprocess` 阶段表示原始输入第 `N` 条；Stage 1 / Stage 2 输出文件本身不再保证与输入同序
 - `stats_hist_bins` 控制 Stage 1 直方图 bins 数；默认建议 `120`，如果分布仍不够清楚可以继续调大
+- 每个 shard 的 Stage 1 `summary.json`，以及 run 级 `aggregate/stage1_summary.json` / `aggregate/stage2_summary.json`，都会输出 `record_uid_check`：
+  - `total_records`
+  - `unique_record_uids`
+  - `duplicate_record_uids`
+  - `duplicate_records`
+  - `duplicate_samples`
+- 如果某个 shard 存在重复记录，aggregate summary 还会单独列出 `shards_with_duplicates`
 
 ---
 
@@ -315,9 +337,15 @@ application/pdf → .pdf
 
 ### Stage 1 输出（preprocessed JSONL）
 
+说明：该文件现在是 append-only、无序输出；下游不要按行号与原始输入对齐，而要按 `record_uid` 或 `id` 使用。
+
 ```json
 {
+  "record_uid": "part-00000:00001234",
   "id": "https://example.com/",
+  "input_shard": "part-00000",
+  "input_index": 1234,
+  "source_input_path": "/path/to/raw_dir/part-00000.jsonl",
   "_meta": {
     "url": "https://example.com/",
     "final_url": "https://example.com/",
@@ -370,7 +398,11 @@ application/pdf → .pdf
 
 ```json
 {
+  "record_uid": "part-00000:00004567",
   "id": "https://example.com/very-long-article",
+  "input_shard": "part-00000",
+  "input_index": 4567,
+  "source_input_path": "/path/to/raw_dir/part-00000.jsonl",
   "_meta": {
     "url": "https://example.com/very-long-article",
     "final_url": "https://example.com/very-long-article",
@@ -402,7 +434,11 @@ reject summary 不再使用 `p50/p90/p95` 这类摘要描述失败样本，而�
       "threshold_value": 65536,
       "records": [
         {
+          "record_uid": "part-00000:00004567",
           "id": "https://example.com/a",
+          "input_shard": "part-00000",
+          "input_index": 4567,
+          "source_input_path": "/path/to/raw_dir/part-00000.jsonl",
           "actual_cleaned_chars": 80958,
           "visible_text_chars": 4104,
           "original_chars": 121004,
@@ -424,6 +460,12 @@ reject summary 不再使用 `p50/p90/p95` 这类摘要描述失败样本，而�
 
 ```json
 {
+  "record_uid": "part-00000:00001234",
+  "id": "https://example.com/",
+  "input_shard": "part-00000",
+  "input_index": 1234,
+  "source_input_path": "/path/to/raw_dir/part-00000.jsonl",
+  "_meta": { "url": "...", "final_url": "...", "page_type": ["HOME_PAGE"] },
   "output_html": "<!DOCTYPE html>...",
   "model": "your-model",
   "prompt_tokens": 12000,
@@ -596,7 +638,11 @@ reject summary 不再使用 `p50/p90/p95` 这类摘要描述失败样本，而�
 
 ```json
 {
+  "record_uid": "part-00000:00004567",
   "id": "https://example.com/very-long-article",
+  "input_shard": "part-00000",
+  "input_index": 4567,
+  "source_input_path": "/path/to/raw_dir/part-00000.jsonl",
   "_meta": { "url": "...", "final_url": "...", "page_type": ["ARTICLE"] },
   "reject_reason": "too_long_after_preprocess",
   "preprocess_stats": {
@@ -608,7 +654,7 @@ reject summary 不再使用 `p50/p90/p95` 这类摘要描述失败样本，而�
 ```
 
 关键点：
-- reject 文件必须保留 `id`、`_meta`、`reject_reason` 和核心 stats；
+- reject 文件必须保留 `record_uid`、`id`、`_meta`、`reject_reason` 和核心 stats；
 - 不建议把完整 `preprocessed_html` 再写进 reject 文件，否则会把“省 tokens”的收益又写回磁盘；
 - keep / reject 都要统计数量，方便看过滤比例是否异常。
 
@@ -681,8 +727,8 @@ print(f"inline script 长度 p50={sorted(all_script_chars)[len(all_script_chars)
 | 组件 | distillation/ 来源 | html_rewrite/ 用法 |
 |------|-------------------|-------------------|
 | API 调用 + retry | `utils/api_client.call_chat_completion()` | Stage 2 直接复用 |
-| 并发模型 | `distill.py:ThreadPoolExecutor` | Stage 1 / Stage 2 均使用，新增有序写出 |
-| Resume | `distill.py:done_ids 扫描` | 升级为：读已有结果 → merge → 有序覆盖写出 |
+| 并发模型 | `distill.py:ThreadPoolExecutor` | Stage 1 / Stage 2 均使用，改为 append-only 写出 |
+| Resume | `distill.py:done_ids 扫描` | 升级为：扫描已有 JSONL 中的 `record_uid` 去重 |
 | Config 加载 | `config.py:load_config(Path)` | 镜像实现，新增预处理阈值字段 |
 | Prompt 模块接口 | `prompts/svg.py: SYSTEM_PROMPT + build_user_content()` | `prompts/html_rewrite.py` 遵循同一接口 |
 | 日志约定 | `[distill]` tag | 改为 `[preprocess]` / `[rewrite]` |
@@ -690,7 +736,7 @@ print(f"inline script 长度 p50={sorted(all_script_chars)[len(all_script_chars)
 **distillation 没有的新增内容**：
 - `preprocess/` 子模块（媒体替换、截断、格式化、统计）
 - Stage 1/2 解耦中间文件
-- 有序输出机制（并发 + 排序 + 原子写）
+- `record_uid` 驱动的 append-only / resume 机制
 - 新依赖：`beautifulsoup4 + lxml`
 
 ---
@@ -721,7 +767,8 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 
 当使用 `input_paths` 或模板展开模式时：
 - `--limit N` 表示只处理拼接后前 `N` 条
-- `demo --index N` 也是按拼接后的总顺序取第 `N` 条
+- `demo --index N` 在 `preprocess` 阶段也是按拼接后的总顺序取第 `N` 条
+- Stage 1 / Stage 2 输出文件本身不再保证与原始输入同序
 
 ---
 

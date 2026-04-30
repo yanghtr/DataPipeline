@@ -1,17 +1,16 @@
 """
 Stage 2：批量模型改写引擎。
 
-输入：preprocessed JSONL（Stage 1 输出，已有序）
-输出：output JSONL（与 Stage 1 输出严格同序，可逐行对应比较）
+输入：preprocessed JSONL（Stage 1 输出）
+输出：output JSONL（append-only，无需与 Stage 1 同序）
 
-顺序保证策略：与 Stage 1 相同 —— 并发计算后按原始索引排序，原子写出。
+输出策略：worker 完成一条就追加一条到最终 output.jsonl；resume 基于 record_uid 去重。
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -68,7 +67,7 @@ def _extract_reasoning(message: dict) -> str | None:
 
 def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     """
-    读取预处理结果，并行调用模型，按原始顺序写入 Stage 2 输出。
+    读取预处理结果，并行调用模型，append-only 写入 Stage 2 输出。
 
     Args:
         cfg:   流水线配置
@@ -150,34 +149,31 @@ def _run_rewrite_records(
     system_prompt: str,
     build_user_content,
 ) -> None:
-    # ── 2. Resume：读取已完成结果（id → result），用于后续合并排序 ───────────
-    existing: dict[str, dict] = {}
-    if cfg.resume and output_path.exists():
-        with open(output_path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    r = json.loads(line.strip())
-                    if r.get("id"):
-                        existing[r["id"]] = r
-                except Exception:
-                    pass
-        if existing:
-            logger.info(f"[rewrite] resume：已完成 {len(existing):,} 条，将跳过")
+    # ── 2. Resume：读取已完成结果（record_uid → result），用于跳过已完成样本 ──
+    if not cfg.resume:
+        if output_path.exists():
+            output_path.unlink()
+        if call_log_path.exists():
+            call_log_path.unlink()
+
+    existing = _load_existing_results(output_path, cfg.resume)
+    if existing:
+        logger.info(f"[rewrite] resume：已完成 {len(existing):,} 条，将跳过")
 
     done_ids = set(existing.keys())
-    indexed_todo = [(i, rec) for i, rec in enumerate(records) if rec.get("id") not in done_ids]
+    indexed_todo = [(i, rec) for i, rec in enumerate(records) if not _rewrite_record_is_done(rec, done_ids)]
 
     logger.info(
         f"[rewrite] 待处理 {len(indexed_todo):,} 条，workers={cfg.num_workers}，输出={output_path}，来源={source_label}"
     )
 
-    # ── 3. 并行调用模型，结果收集进 dict ─────────────────────────────────────
-    new_results: dict[int, dict] = {}
-    collect_lock = threading.Lock()
+    # ── 3. 并行调用模型，成功结果直接追加到最终 output.jsonl ─────────────────
+    output_lock = threading.Lock()
     ok_count = 0
     err_count = 0
     count_lock = threading.Lock()
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     call_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def process_one(orig_idx: int, rec: dict) -> None:
@@ -207,7 +203,11 @@ def _run_rewrite_records(
             usage: dict = resp_data.get("usage", {})
 
             result = {
+                "record_uid": rec.get("record_uid") or _fallback_record_uid(rec, orig_idx),
                 "id": rec_id,
+                "input_shard": rec.get("input_shard") or rec.get("_source_shard", ""),
+                "input_index": rec.get("input_index", rec.get("_input_index", orig_idx)),
+                "source_input_path": rec.get("source_input_path", rec.get("_source_input_path", "")),
                 "_meta": rec.get("_meta", {}),
                 "preprocessed_html": preprocessed_html,
                 "response": response_text,
@@ -220,8 +220,7 @@ def _run_rewrite_records(
                 "completion_tokens": usage.get("completion_tokens"),
                 "finish_reason": resp_data["choices"][0].get("finish_reason"),
             }
-            with collect_lock:
-                new_results[orig_idx] = result
+            _append_jsonl_record(output_path, result, output_lock)
             with count_lock:
                 ok_count += 1
 
@@ -243,28 +242,50 @@ def _run_rewrite_records(
                 except Exception as exc:
                     logger.error(f"[rewrite] worker 未捕获异常: {exc}")
 
-    # ── 4. 合并已有 + 新结果，按原始索引排序后原子写出 ───────────────────────
-    existing_by_idx: dict[int, dict] = {}
-    for i, rec in enumerate(records):
-        rec_id = rec.get("id", "")
-        if rec_id in existing:
-            existing_by_idx[i] = existing[rec_id]
-
-    all_by_idx: dict[int, dict] = {**existing_by_idx, **new_results}
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_out = output_path.with_suffix(".tmp")
-
-    with open(tmp_out, "w", encoding="utf-8") as f:
-        for idx in sorted(all_by_idx.keys()):
-            f.write(json.dumps(all_by_idx[idx], ensure_ascii=False) + "\n")
-
-    os.replace(tmp_out, output_path)
-
     logger.info(
         f"[rewrite] 完成：ok={ok_count:,}  error={err_count:,}  "
-        f"输出={output_path}（共 {len(all_by_idx):,} 条，按原始顺序）"
+        f"输出={output_path}（累计 {len(existing) + ok_count:,} 条，append-only，无序）"
     )
+
+
+def _load_existing_results(output_path: Path, resume: bool) -> dict[str, dict]:
+    existing: dict[str, dict] = {}
+    if not resume:
+        return existing
+
+    if not output_path.exists():
+        return existing
+
+    with open(output_path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                record = json.loads(line.strip())
+            except Exception:
+                continue
+            record_key = record.get("record_uid") or record.get("id")
+            if record_key:
+                existing[record_key] = record
+    return existing
+
+
+def _append_jsonl_record(path: Path, record: dict, lock: threading.Lock) -> None:
+    with lock:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _rewrite_record_is_done(rec: dict, existing_keys: set[str]) -> bool:
+    record_uid = rec.get("record_uid") or rec.get("_record_uid")
+    raw_id = rec.get("id")
+    return (record_uid in existing_keys if record_uid else False) or (raw_id in existing_keys if raw_id else False)
+
+
+def _fallback_record_uid(rec: dict, input_index: int) -> str:
+    if rec.get("_record_uid"):
+        return rec["_record_uid"]
+    shard_name = rec.get("input_shard") or rec.get("_source_shard", "part-00000")
+    actual_index = rec.get("input_index", rec.get("_input_index", input_index))
+    return f"{shard_name}:{int(actual_index):08d}"
 
 
 def _read_records(path: Path, limit: int | None = None) -> list[dict]:

@@ -53,6 +53,11 @@ def stage2_shard_paths(run_root_dir: Path, shard_name: str) -> Stage2ShardPaths:
     )
 
 
+def build_record_uid(shard_name: str, input_index: int) -> str:
+    """构造跨多输入文件稳定唯一的流水线记录 id。"""
+    return f"{shard_name}:{input_index:08d}"
+
+
 def aggregate_dir(run_root_dir: Path) -> Path:
     return run_root_dir / "aggregate"
 
@@ -83,12 +88,18 @@ def build_stage1_aggregate_summary(run_root_dir: Path, shard_specs: list[InputSh
     total_kept = 0
     total_rejected = 0
     reject_reasons: dict[str, int] = {}
+    total_record_uid_records = 0
+    total_unique_record_uids = 0
+    total_duplicate_record_uids = 0
+    total_duplicate_records = 0
+    shards_with_duplicates: list[dict] = []
 
     for shard in shard_specs:
         summary_path = stage1_shard_paths(run_root_dir, shard.shard_name).summary_log_path
         if not summary_path.exists():
             continue
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        record_uid_check = summary.get("record_uid_check", {})
         shard_summaries.append(
             {
                 "shard_name": shard.shard_name,
@@ -98,13 +109,28 @@ def build_stage1_aggregate_summary(run_root_dir: Path, shard_specs: list[InputSh
                 "kept": summary.get("kept", 0),
                 "rejected": summary.get("rejected", 0),
                 "reject_reasons": summary.get("reject_reasons", {}),
+                "record_uid_check": record_uid_check,
             }
         )
         total_input += summary.get("total_input", 0)
         total_kept += summary.get("kept", 0)
         total_rejected += summary.get("rejected", 0)
+        total_record_uid_records += record_uid_check.get("total_records", 0)
+        total_unique_record_uids += record_uid_check.get("unique_record_uids", 0)
+        total_duplicate_record_uids += record_uid_check.get("duplicate_record_uids", 0)
+        total_duplicate_records += record_uid_check.get("duplicate_records", 0)
         for reason, count in (summary.get("reject_reasons") or {}).items():
             reject_reasons[reason] = reject_reasons.get(reason, 0) + count
+        if record_uid_check.get("has_duplicates"):
+            shards_with_duplicates.append(
+                {
+                    "shard_name": shard.shard_name,
+                    "summary_path": str(summary_path),
+                    "duplicate_record_uids": record_uid_check.get("duplicate_record_uids", 0),
+                    "duplicate_records": record_uid_check.get("duplicate_records", 0),
+                    "duplicate_samples": record_uid_check.get("duplicate_samples", []),
+                }
+            )
 
     payload = {
         "total_shards": len(shard_specs),
@@ -113,6 +139,14 @@ def build_stage1_aggregate_summary(run_root_dir: Path, shard_specs: list[InputSh
         "kept": total_kept,
         "rejected": total_rejected,
         "reject_reasons": dict(sorted(reject_reasons.items())),
+        "record_uid_check": {
+            "total_records": total_record_uid_records,
+            "unique_record_uids": total_unique_record_uids,
+            "duplicate_record_uids": total_duplicate_record_uids,
+            "duplicate_records": total_duplicate_records,
+            "has_duplicates": total_duplicate_records > 0,
+        },
+        "shards_with_duplicates": shards_with_duplicates,
         "shards": shard_summaries,
     }
     _atomic_write_json(out_path, payload)
@@ -126,26 +160,55 @@ def build_stage2_aggregate_summary(run_root_dir: Path, shard_specs: list[InputSh
 
     shard_summaries = []
     total_outputs = 0
+    total_record_uid_records = 0
+    total_unique_record_uids = 0
+    total_duplicate_record_uids = 0
+    total_duplicate_records = 0
+    shards_with_duplicates: list[dict] = []
 
     for shard in shard_specs:
         shard_paths = stage2_shard_paths(run_root_dir, shard.shard_name)
         if not shard_paths.output_path.exists():
             continue
-        line_count = _count_lines(shard_paths.output_path)
+        record_uid_check = _inspect_record_uids(shard_paths.output_path)
+        line_count = record_uid_check["total_records"]
         shard_summaries.append(
             {
                 "shard_name": shard.shard_name,
                 "input_path": shard.input_path,
                 "output_path": str(shard_paths.output_path),
                 "records": line_count,
+                "record_uid_check": record_uid_check,
             }
         )
         total_outputs += line_count
+        total_record_uid_records += record_uid_check.get("total_records", 0)
+        total_unique_record_uids += record_uid_check.get("unique_record_uids", 0)
+        total_duplicate_record_uids += record_uid_check.get("duplicate_record_uids", 0)
+        total_duplicate_records += record_uid_check.get("duplicate_records", 0)
+        if record_uid_check.get("has_duplicates"):
+            shards_with_duplicates.append(
+                {
+                    "shard_name": shard.shard_name,
+                    "output_path": str(shard_paths.output_path),
+                    "duplicate_record_uids": record_uid_check.get("duplicate_record_uids", 0),
+                    "duplicate_records": record_uid_check.get("duplicate_records", 0),
+                    "duplicate_samples": record_uid_check.get("duplicate_samples", []),
+                }
+            )
 
     payload = {
         "total_shards": len(shard_specs),
         "summarized_shards": len(shard_summaries),
         "total_outputs": total_outputs,
+        "record_uid_check": {
+            "total_records": total_record_uid_records,
+            "unique_record_uids": total_unique_record_uids,
+            "duplicate_record_uids": total_duplicate_record_uids,
+            "duplicate_records": total_duplicate_records,
+            "has_duplicates": total_duplicate_records > 0,
+        },
+        "shards_with_duplicates": shards_with_duplicates,
         "shards": shard_summaries,
     }
     _atomic_write_json(out_path, payload)
@@ -202,3 +265,38 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
 def _count_lines(path: Path) -> int:
     with open(path, encoding="utf-8") as f:
         return sum(1 for _ in f)
+
+
+def _inspect_record_uids(path: Path) -> dict:
+    counts: dict[str, int] = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+            record_uid = str(record.get("record_uid", "")).strip()
+            if not record_uid:
+                continue
+            counts[record_uid] = counts.get(record_uid, 0) + 1
+
+    duplicate_items = [(uid, count) for uid, count in counts.items() if count > 1]
+    duplicate_items.sort(key=lambda item: (-item[1], item[0]))
+    total_records = sum(counts.values())
+    unique_record_uids = len(counts)
+    duplicate_record_uids = len(duplicate_items)
+    duplicate_records = sum(count - 1 for _, count in duplicate_items)
+    return {
+        "total_records": total_records,
+        "unique_record_uids": unique_record_uids,
+        "duplicate_record_uids": duplicate_record_uids,
+        "duplicate_records": duplicate_records,
+        "has_duplicates": duplicate_records > 0,
+        "duplicate_samples": [
+            {"record_uid": uid, "count": count}
+            for uid, count in duplicate_items[:20]
+        ],
+    }

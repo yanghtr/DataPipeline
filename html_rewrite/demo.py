@@ -54,17 +54,18 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(stats.to_dict(), ensure_ascii=False, indent=2))
 
     elif args.stage == "rewrite":
+        _, shard_specs = cfg.resolve_input_shards()
+        shard_order = {shard.shard_name: order for order, shard in enumerate(shard_specs)}
         if cfg.use_sharded_run():
-            _, shard_specs = cfg.resolve_input_shards()
             preprocessed_paths = [
                 stage2_shard_paths(Path(cfg.run_root_dir), shard.shard_name).input_path
                 for shard in shard_specs
                 if stage2_shard_paths(Path(cfg.run_root_dir), shard.shard_name).input_path.exists()
             ]
-            rec = _read_record_from_paths(preprocessed_paths, args.index)
+            rec = _read_ordered_stage1_record_from_paths(preprocessed_paths, shard_order, args.index)
         else:
             input_path = Path(cfg.preprocessed_path)
-            rec = _read_record(input_path, args.index)
+            rec = _read_ordered_stage1_record_from_paths([input_path], shard_order, args.index)
         rec_id = rec.get("id", "")
         preprocessed_html = rec.get("preprocessed_html", "")
         logger.info(f"[demo] 改写第 {args.index} 条，id={rec_id}")
@@ -114,6 +115,34 @@ def _read_record_from_paths(paths: list[Path], index: int) -> dict:
                     return json.loads(line.strip())
                 seen += 1
     raise IndexError(f"输入文件列表中不存在第 {index} 条记录")
+
+
+def _read_ordered_stage1_record_from_paths(
+    paths: list[Path],
+    shard_order: dict[str, int],
+    index: int,
+) -> dict:
+    records: list[dict] = []
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                records.append(json.loads(line))
+
+    def sort_key(record: dict) -> tuple[int, int, str]:
+        shard_name = record.get("input_shard", "")
+        return (
+            shard_order.get(shard_name, 10**9),
+            int(record.get("input_index", 10**9)),
+            record.get("record_uid", ""),
+        )
+
+    records.sort(key=sort_key)
+    if index < 0 or index >= len(records):
+        raise IndexError(f"预处理输出中不存在第 {index} 条记录")
+    return records[index]
 
 
 if __name__ == "__main__":

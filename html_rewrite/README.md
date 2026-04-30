@@ -8,7 +8,14 @@
 input shard JSONL(s)  →  [Stage 1: 预处理 + 过滤 + 统计可视化]  →  stage1/<shard>/preprocessed.jsonl  →  [Stage 2: 模型改写]  →  stage2/<shard>/output.jsonl
 ```
 
-两个阶段通过中间文件解耦，可独立运行、独立 resume。输出结果与输入严格同序，两阶段结果可逐行对应比较。
+两个阶段通过中间文件解耦，可独立运行、独立 resume。现在两个阶段默认都采用 append-only、无序输出；恢复和去重依赖 `record_uid`，不是依赖行号。
+
+当前落盘策略：
+
+- Stage 1 worker 完成一条，就直接追加到 `preprocessed.jsonl` / `rejects.jsonl` / `stats.jsonl`
+- Stage 2 worker 完成一条，就直接追加到最终 `output.jsonl`
+- 两个阶段都保留原始 `id`、原始 `_meta`，并额外写出统一的 `record_uid + input_shard + input_index + source_input_path`
+- 因此中途停止后，resume 会按 `record_uid` 跳过已完成样本，不需要重新处理这部分
 
 ## 快速开始
 
@@ -100,6 +107,8 @@ Stage 1 跑完后，通常会看到这些文件或目录：
 - `run_root_dir/aggregate/stage1_summary.json`：所有 shard 的 Stage 1 聚合摘要
 - `run_root_dir/aggregate/stage2_summary.json`：所有 shard 的 Stage 2 聚合摘要
 
+两个 aggregate summary 现在也都会包含 `record_uid_check` 和 `shards_with_duplicates`，方便快速发现哪个 shard 有重复记录。
+
 旧模式兼容说明：
 
 - 如果没有设置 `run_root_dir`，程序会退回单文件输出模式
@@ -115,7 +124,7 @@ python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --s
 python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --stage preprocess --index 0
 ```
 
-当使用 `input_paths` 或模板展开模式时，`--limit` 和 `demo --index N` 都是基于“拼接后的总顺序”计数的。
+当使用 `input_paths` 或模板展开模式时，`--limit` 仍然是基于输入展开后的总顺序计数。`demo --index N` 在 `preprocess` 阶段仍表示原始输入第 `N` 条；Stage 1 / Stage 2 输出文件本身不再保证与输入同序。
 
 ## 配置参数说明
 
@@ -178,7 +187,11 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 
 ```json
 {
+  "record_uid": "part-00000:00001234",
   "id": "https://example.com/",
+  "input_shard": "part-00000",
+  "input_index": 1234,
+  "source_input_path": "/path/to/raw_dir/part-00000.jsonl",
   "_meta": { "url": "...", "final_url": "...", "crawl_time": 1711152000, "page_type": ["HOME_PAGE"], "part": "..." },
   "preprocessed_html": "<!DOCTYPE html>...",
   "preprocess_stats": {
@@ -211,6 +224,13 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 }
 ```
 
+说明：
+
+- `record_uid`：流水线内部真正的唯一键，格式为 `<input_shard>:<input_index>`
+- `id`：保留原始网页 id / url，便于下游按网页语义使用
+- `_meta`：原始样本元信息，本来就会保留；现在继续原样写到 Stage 1 / Stage 2 输出里
+- `input_shard + input_index + source_input_path`：用于跨多输入文件定位原始来源，也让 resume 不依赖 `id` 是否唯一
+
 `preprocess_stats` 中重点建议关注：
 
 - `cleaned_chars`：最终进入 gate 的 HTML 长度
@@ -225,7 +245,11 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 
 ```json
 {
+  "record_uid": "part-00000:00004567",
   "id": "https://example.com/very-long-article",
+  "input_shard": "part-00000",
+  "input_index": 4567,
+  "source_input_path": "/path/to/raw_dir/part-00000.jsonl",
   "_meta": { "url": "...", "final_url": "...", "page_type": ["ARTICLE"] },
   "reject_reason": "too_long_after_preprocess",
   "preprocess_stats": {
@@ -261,6 +285,12 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 
 ```json
 {
+  "record_uid": "part-00000:00001234",
+  "id": "https://example.com/",
+  "input_shard": "part-00000",
+  "input_index": 1234,
+  "source_input_path": "/path/to/raw_dir/part-00000.jsonl",
+  "_meta": { "url": "...", "final_url": "...", "page_type": ["HOME_PAGE"] },
   "response": "...模型 message.content 原文...",
   "reasoning": "...模型 reasoning / reasoning_content（如果后端提供）...",
   "output_html": "<!DOCTYPE html>...",
@@ -298,9 +328,20 @@ Stage 1 会额外生成：
 
 - `total_input / kept / rejected`
 - `reject_reasons`
+- `record_uid_check`
 - `thresholds`
 - `cleaned_chars / original_chars / visible_text_chars / compression_ratio` 的汇总统计
 - `rule_counts`，用于看各类局部规则的触发频率
+
+其中 `record_uid_check` 会明确写出：
+
+- `total_records`
+- `unique_record_uids`
+- `duplicate_record_uids`
+- `duplicate_records`
+- `duplicate_samples`
+
+如果某个 shard 发生重复写入，这里会很快暴露出来。
 
 默认会画出这些分布：
 
@@ -401,8 +442,8 @@ __MEDIA_PLACEHOLDER__/media__width{W}__height{H}.ext
 ```
 html_rewrite/
 ├── config.py                 # HtmlRewriteConfig dataclass
-├── stage1_preprocess.py      # Stage 1 批量预处理（并发 + resume + 有序输出）
-├── stage2_rewrite.py         # Stage 2 批量模型改写（并发 + resume + 有序输出）
+├── stage1_preprocess.py      # Stage 1 批量预处理（并发 + resume + append-only 输出）
+├── stage2_rewrite.py         # Stage 2 批量模型改写（并发 + resume + append-only 输出）
 ├── main.py                   # CLI 入口
 ├── demo.py                   # 单条 debug 工具
 ├── run_layout.py             # shard 展开、run 目录布局与 manifest 管理
