@@ -9,7 +9,21 @@ ssl_verify: false
 log_user: "html_rewrite"
 
 # ── 路径 ─────────────────────────────────────────────────────────────────────
-input_path: "/home/yanghaitao/Projects/Data/raw/FineWebEdu/samples10.jsonl"
+# 推荐：模板展开 + run_root_dir 分片输出
+input_dir: "/home/yanghaitao/Projects/Data/raw/FineWebEdu"
+input_filename_template: "part-{index:05d}.jsonl"
+input_start_index: 0                 # 包含
+input_end_index_exclusive: 1         # 不包含
+run_root_dir: "/home/yanghaitao/Projects/Data/html_rewrite/run_default"
+output_shard_name_template: "part-{index:05d}"
+
+# 兼容旧模式：单文件或显式列表输入（二选一；与上面的模板模式不要同时用）
+# input_path: "/home/yanghaitao/Projects/Data/raw/FineWebEdu/samples10.jsonl"
+# input_paths:
+#   - "/path/to/part-00000.jsonl"
+#   - "/path/to/part-00001.jsonl"
+
+# 旧模式输出路径（仅当未设置 run_root_dir 时使用）
 preprocessed_path: "/home/yanghaitao/Projects/Data/html_rewrite/preprocessed.jsonl"
 output_path: "/home/yanghaitao/Projects/Data/html_rewrite/output.jsonl"
 call_log_path: "logs/html_rewrite_api_calls.jsonl"

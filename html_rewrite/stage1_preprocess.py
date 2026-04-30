@@ -29,43 +29,102 @@ from .preprocess.analysis import write_plots, write_reject_reason_report, write_
 from .preprocess.filtering import decide_keep
 from .preprocess.language import ensure_langid_available
 from .preprocess.parser import ensure_lxml_available
+from .run_layout import (
+    build_manifest_payload,
+    build_stage1_aggregate_summary,
+    ensure_manifest,
+    stage1_shard_paths,
+)
 
 
 def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     """
-    读取 cfg.input_path，并行预处理，按原始输入顺序写入 cfg.preprocessed_path。
+    读取输入 JSONL，并行预处理，按原始输入顺序写出 Stage 1 结果。
 
     Args:
         cfg:   流水线配置
         limit: 仅处理前 N 条（调试用）
     """
-    input_path = Path(cfg.input_path)
-    output_path = Path(cfg.preprocessed_path)
-    stats_log_path = Path(cfg.stats_log_path)
-    reject_log_path = Path(cfg.reject_log_path)
-    summary_log_path = Path(cfg.summary_log_path)
-    stats_plot_dir = Path(cfg.stats_plot_dir)
-    reject_reason_report_path = summary_log_path.with_name(
-        f"{summary_log_path.stem}_reject_reasons.json"
-    )
-
     # 缺关键解析依赖时直接停止，避免静默降级或整批错误 reject。
     ensure_lxml_available()
     if cfg.enable_language_filter:
         ensure_langid_available()
 
-    # ── 1. 读取全量输入 ───────────────────────────────────────────────────────
-    records: list[dict] = []
-    with open(input_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
+    input_mode, shard_specs = cfg.resolve_input_shards()
+    if cfg.use_sharded_run():
+        run_root_dir = Path(cfg.run_root_dir)
+        manifest = build_manifest_payload(
+            input_mode=input_mode,
+            input_dir=cfg.input_dir,
+            input_filename_template=cfg.input_filename_template,
+            input_start_index=cfg.input_start_index,
+            input_end_index_exclusive=cfg.input_end_index_exclusive,
+            output_shard_name_template=cfg.output_shard_name_template,
+            shard_specs=shard_specs,
+        )
+        ensure_manifest(run_root_dir, manifest)
 
+        remaining_limit = limit
+        for shard in shard_specs:
+            if remaining_limit is not None and remaining_limit <= 0:
+                break
+            input_path = Path(shard.input_path)
+            records = _read_records(input_path, remaining_limit)
+            shard_paths = stage1_shard_paths(run_root_dir, shard.shard_name)
+            _run_preprocess_records(
+                records=records,
+                cfg=cfg,
+                output_path=shard_paths.output_path,
+                stats_log_path=shard_paths.stats_log_path,
+                reject_log_path=shard_paths.reject_log_path,
+                summary_log_path=shard_paths.summary_log_path,
+                stats_plot_dir=shard_paths.stats_plot_dir,
+                source_label=f"{input_path} -> stage1/{shard.shard_name}",
+            )
+            if remaining_limit is not None:
+                remaining_limit -= len(records)
+
+        agg_path = build_stage1_aggregate_summary(run_root_dir, shard_specs)
+        logger.info(f"[preprocess] aggregate summary 已写出：{agg_path}")
+        return
+
+    input_paths = [Path(shard.input_path) for shard in shard_specs]
+    records: list[dict] = []
+    for input_path in input_paths:
+        records.extend(_read_records(input_path))
     if limit is not None:
         records = records[:limit]
 
-    logger.info(f"[preprocess] 共 {len(records):,} 条输入，来自 {input_path}")
+    logger.info(
+        f"[preprocess] 共 {len(records):,} 条输入，来自 {len(input_paths)} 个文件："
+        f" {[str(p) for p in input_paths]}"
+    )
+    _run_preprocess_records(
+        records=records,
+        cfg=cfg,
+        output_path=Path(cfg.preprocessed_path),
+        stats_log_path=Path(cfg.stats_log_path),
+        reject_log_path=Path(cfg.reject_log_path),
+        summary_log_path=Path(cfg.summary_log_path),
+        stats_plot_dir=Path(cfg.stats_plot_dir),
+        source_label=", ".join(str(p) for p in input_paths),
+    )
+
+
+def _run_preprocess_records(
+    *,
+    records: list[dict],
+    cfg: HtmlRewriteConfig,
+    output_path: Path,
+    stats_log_path: Path,
+    reject_log_path: Path,
+    summary_log_path: Path,
+    stats_plot_dir: Path,
+    source_label: str,
+) -> None:
+    reject_reason_report_path = summary_log_path.with_name(
+        f"{summary_log_path.stem}_reject_reasons.json"
+    )
 
     # ── 2. Resume：读取 keep / reject 结果（id → result），用于后续合并排序 ───
     existing_kept: dict[str, dict] = {}
@@ -99,7 +158,9 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     # 保留原始索引，只处理未完成的
     indexed_todo = [(i, rec) for i, rec in enumerate(records) if _get_id(rec) not in done_ids]
 
-    logger.info(f"[preprocess] 待处理 {len(indexed_todo):,} 条，workers={cfg.num_workers}，输出={output_path}")
+    logger.info(
+        f"[preprocess] 待处理 {len(indexed_todo):,} 条，workers={cfg.num_workers}，输出={output_path}，来源={source_label}"
+    )
 
     # ── 3. 并行处理，结果收集进 dict（orig_idx → result） ────────────────────
     new_kept: dict[int, dict] = {}
@@ -264,6 +325,19 @@ def run_preprocess(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
         f"[preprocess] 完成：keep={len(kept_by_idx):,}  reject={len(rejected_by_idx):,}  "
         f"error={err_count:,}  输出={output_path}（keep，按原始顺序）"
     )
+
+
+def _read_records(path: Path, limit: int | None = None) -> list[dict]:
+    records: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            records.append(json.loads(line))
+            if limit is not None and len(records) >= limit:
+                break
+    return records
 
 
 def _get_id(rec: dict) -> str:

@@ -22,6 +22,12 @@ from loguru import logger
 
 from utils.api_client import call_chat_completion
 from .config import HtmlRewriteConfig
+from .run_layout import (
+    build_manifest_payload,
+    build_stage2_aggregate_summary,
+    ensure_manifest,
+    stage2_shard_paths,
+)
 
 # 提取模型输出中的 HTML（```html ... ``` 代码块或裸 HTML）
 _HTML_BLOCK_RE = re.compile(r"```(?:html)?\s*(<!DOCTYPE.*?</html>)\s*```", re.DOTALL | re.IGNORECASE)
@@ -62,7 +68,7 @@ def _extract_reasoning(message: dict) -> str | None:
 
 def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     """
-    读取 cfg.preprocessed_path，并行调用模型，按原始顺序写入 cfg.output_path。
+    读取预处理结果，并行调用模型，按原始顺序写入 Stage 2 输出。
 
     Args:
         cfg:   流水线配置
@@ -72,23 +78,78 @@ def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     system_prompt: str = pm.SYSTEM_PROMPT
     build_user_content = pm.build_user_content
 
+    input_mode, shard_specs = cfg.resolve_input_shards()
+    if cfg.use_sharded_run():
+        run_root_dir = Path(cfg.run_root_dir)
+        manifest_path = run_root_dir / "manifest.json"
+        if not manifest_path.exists():
+            raise RuntimeError("Shard run manifest not found. Please run Stage 1 first.")
+        expected_manifest = build_manifest_payload(
+            input_mode=input_mode,
+            input_dir=cfg.input_dir,
+            input_filename_template=cfg.input_filename_template,
+            input_start_index=cfg.input_start_index,
+            input_end_index_exclusive=cfg.input_end_index_exclusive,
+            output_shard_name_template=cfg.output_shard_name_template,
+            shard_specs=shard_specs,
+        )
+        ensure_manifest(run_root_dir, expected_manifest)
+
+        remaining_limit = limit
+        for shard in shard_specs:
+            if remaining_limit is not None and remaining_limit <= 0:
+                break
+            shard_paths = stage2_shard_paths(run_root_dir, shard.shard_name)
+            if not shard_paths.input_path.exists():
+                logger.info(f"[rewrite] 跳过 {shard.shard_name}：Stage 1 keep 输出不存在")
+                continue
+            records = _read_records(shard_paths.input_path, remaining_limit)
+            _run_rewrite_records(
+                records=records,
+                cfg=cfg,
+                output_path=shard_paths.output_path,
+                call_log_path=shard_paths.call_log_path,
+                source_label=f"{shard_paths.input_path} -> stage2/{shard.shard_name}",
+                system_prompt=system_prompt,
+                build_user_content=build_user_content,
+            )
+            if remaining_limit is not None:
+                remaining_limit -= len(records)
+
+        agg_path = build_stage2_aggregate_summary(run_root_dir, shard_specs)
+        logger.info(f"[rewrite] aggregate summary 已写出：{agg_path}")
+        return
+
     input_path = Path(cfg.preprocessed_path)
     output_path = Path(cfg.output_path)
     call_log_path = Path(cfg.call_log_path)
 
-    # ── 1. 读取全量输入 ───────────────────────────────────────────────────────
-    records: list[dict] = []
-    with open(input_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-
+    records = _read_records(input_path)
     if limit is not None:
         records = records[:limit]
 
     logger.info(f"[rewrite] 共 {len(records):,} 条输入，来自 {input_path}")
+    _run_rewrite_records(
+        records=records,
+        cfg=cfg,
+        output_path=output_path,
+        call_log_path=call_log_path,
+        source_label=str(input_path),
+        system_prompt=system_prompt,
+        build_user_content=build_user_content,
+    )
 
+
+def _run_rewrite_records(
+    *,
+    records: list[dict],
+    cfg: HtmlRewriteConfig,
+    output_path: Path,
+    call_log_path: Path,
+    source_label: str,
+    system_prompt: str,
+    build_user_content,
+) -> None:
     # ── 2. Resume：读取已完成结果（id → result），用于后续合并排序 ───────────
     existing: dict[str, dict] = {}
     if cfg.resume and output_path.exists():
@@ -106,7 +167,9 @@ def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
     done_ids = set(existing.keys())
     indexed_todo = [(i, rec) for i, rec in enumerate(records) if rec.get("id") not in done_ids]
 
-    logger.info(f"[rewrite] 待处理 {len(indexed_todo):,} 条，workers={cfg.num_workers}，输出={output_path}")
+    logger.info(
+        f"[rewrite] 待处理 {len(indexed_todo):,} 条，workers={cfg.num_workers}，输出={output_path}，来源={source_label}"
+    )
 
     # ── 3. 并行调用模型，结果收集进 dict ─────────────────────────────────────
     new_results: dict[int, dict] = {}
@@ -202,3 +265,16 @@ def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
         f"[rewrite] 完成：ok={ok_count:,}  error={err_count:,}  "
         f"输出={output_path}（共 {len(all_by_idx):,} 条，按原始顺序）"
     )
+
+
+def _read_records(path: Path, limit: int | None = None) -> list[dict]:
+    records: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            records.append(json.loads(line))
+            if limit is not None and len(records) >= limit:
+                break
+    return records

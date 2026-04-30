@@ -6,7 +6,14 @@
 
 **输入**：FineWebEdu JSONL，每条含原始网页 `html` 及元信息（`url`、`final_url`、`crawl_time`、`page_type`、`part` 等）。
 
-**输出**：以“可进入 Stage 2 的有效样本”为主输出，JSONL 每条包含预处理后 HTML、模型改写的 clean HTML、预处理统计及原始 meta 信息；同时额外输出 Stage 1 reject 日志和汇总统计，便于调参与回溯。
+推荐输入方式：
+- `input_dir + input_filename_template + [input_start_index, input_end_index_exclusive)` 自动展开
+
+兼容输入方式：
+- 单文件：`input_path`
+- 显式列表：`input_paths`
+
+**输出**：默认按 shard 分目录输出。每个输入 shard 对应一组 Stage 1 / Stage 2 / 日志文件；同时写 `manifest.json` 和 run 级 aggregate summary，便于大规模 resume、排错与回溯。
 
 **核心设计原则**：
 - 预处理只做最小化处理（路径替换、超长截断、格式标准化），不重写结构、不删除 class/nav/sidebar/footer
@@ -20,7 +27,7 @@
 ## 2. 整体架构
 
 ```
-raw JSONL
+input shard JSONL(s)
   │
   ▼
 [Stage 1: Preprocess]                html_rewrite/stage1_preprocess.py
@@ -32,7 +39,13 @@ raw JSONL
   └─ 写出 keep / reject / summary
   │
   ▼  (中间文件，可调整阈值后 --no-resume 重跑)
-preprocessed JSONL  +  preprocess_stats JSONL  +  preprocess_rejects JSONL  +  preprocess_summary JSON
+run_root_dir/stage1/<shard>/
+  ├─ preprocessed.jsonl
+  ├─ stats.jsonl
+  ├─ rejects.jsonl
+  ├─ summary.json
+  ├─ summary_reject_reasons.json
+  └─ plots/
   │
   ▼
 [Stage 2: Rewrite]                   html_rewrite/stage2_rewrite.py
@@ -41,10 +54,18 @@ preprocessed JSONL  +  preprocess_stats JSONL  +  preprocess_rejects JSONL  +  p
   └─ retry / resume / 有序写出
   │
   ▼
-output JSONL  (含 meta + preprocessed_html + output_html + preprocess_stats)
+run_root_dir/stage2/<shard>/
+  ├─ output.jsonl
+  └─ api_calls.jsonl
+
+run_root_dir/
+  ├─ manifest.json
+  └─ aggregate/
+      ├─ stage1_summary.json
+      └─ stage2_summary.json
 ```
 
-两个阶段通过中间文件完全解耦，各自支持独立 resume。Stage 1 无网络依赖，Stage 2 只读取 Stage 1 的 keep 样本，不重跑预处理。reject 样本不进入 Stage 2，但必须保留日志，避免“静默丢数”。
+两个阶段通过中间文件完全解耦，各自支持独立 resume。Stage 1 无网络依赖，Stage 2 只读取对应 shard 的 Stage 1 keep 样本，不重跑预处理。reject 样本不进入 Stage 2，但必须保留日志，避免“静默丢数”。
 
 补充约束：
 - `lxml` 是 Stage 1 的硬依赖。
@@ -68,11 +89,10 @@ for i, rec in enumerate(records):          # 保留原始索引
 ```
 
 **Resume 与顺序兼容**：
-- Resume 时读取已有 keep 输出文件，建立 `{id → record}` 映射
-- 如启用 reject 输出，也读取已有 reject 文件，建立 `{id → reject_info}` 映射
-- 只处理未完成的 `todo` 记录（仍记录原始索引）
-- 全部处理完成后，将已有结果和新结果合并成 `{orig_idx → record}`，统一排序写出
-- keep 文件与 reject 文件都各自保持原始顺序；Stage 2 只消费 keep 文件
+- run 级别用 `manifest.json` 固定“输入 shard → 输出 shard”映射，防止错误 resume 到另一批数据
+- shard 内 resume 时读取已有 keep / reject / output 文件，建立 `{id → record}` 映射
+- 只处理该 shard 内未完成的 `todo` 记录（仍记录 shard 内原始索引）
+- keep 文件与 reject 文件都各自保持 shard 内原始顺序；Stage 2 只消费对应 shard 的 keep 文件
 
 **原子性**：写入 `.tmp` 文件，`os.replace()` 原子覆盖，不会产生半完成文件。
 
@@ -88,6 +108,7 @@ html_rewrite/
 ├── stage2_rewrite.py         # Stage 2 批量模型改写引擎
 ├── main.py                   # CLI 入口 (--stage preprocess|rewrite|all)
 ├── demo.py                   # 单条 debug 工具
+├── run_layout.py             # 输入 shard 展开、run 目录与 manifest 管理
 ├── README.md                 # 使用说明
 ├── preprocess/
 │   ├── __init__.py           # 导出 preprocess(html, cfg) -> (str, PreprocessStats)
@@ -125,10 +146,23 @@ max_retries: 3
 ssl_verify: true
 log_user: "html_rewrite"
 
-# ── 路径
-input_path: "/path/to/raw.jsonl"
-preprocessed_path: "/path/to/preprocessed.jsonl"   # Stage 1 输出 / Stage 2 输入
-output_path: "/path/to/output.jsonl"               # Stage 2 输出
+# ── 路径（推荐：模板展开 + run 级分片输出）
+input_dir: "/path/to/raw_dir"
+input_filename_template: "part-{index:05d}.jsonl"
+input_start_index: 0
+input_end_index_exclusive: 100
+run_root_dir: "/path/to/run_20260501"
+output_shard_name_template: "part-{index:05d}"
+
+# 兼容旧模式：单文件或显式列表输入（二选一；不要与上面的模板模式混用）
+# input_path: "/path/to/raw.jsonl"
+# input_paths:
+#   - "/path/to/part-00000.jsonl"
+#   - "/path/to/part-00001.jsonl"
+#
+# 旧模式输出路径（仅当未设置 run_root_dir 时使用）
+preprocessed_path: "/path/to/preprocessed.jsonl"
+output_path: "/path/to/output.jsonl"
 call_log_path: "logs/api_calls.jsonl"
 stats_log_path: "logs/preprocess_stats.jsonl"
 reject_log_path: "logs/preprocess_rejects.jsonl"
@@ -163,6 +197,18 @@ prompt_module: "html_rewrite"
 num_workers: 16
 resume: true
 ```
+
+规则：
+- 推荐模式下，输入路径由 `input_dir / input_filename_template.format(index=i)` 自动展开
+- `input_start_index` 为包含式，`input_end_index_exclusive` 为不包含式
+- `input_path`、`input_paths`、模板展开模式三者只能选一种，避免歧义
+- 若 `run_root_dir` 非空，则启用 run 级 shard 输出模式：
+  - Stage 1 写 `run_root_dir/stage1/<shard>/...`
+  - Stage 2 写 `run_root_dir/stage2/<shard>/...`
+  - 同时维护 `run_root_dir/manifest.json` 与 `run_root_dir/aggregate/*.json`
+- 若未设置 `run_root_dir`，则回退到旧单文件输出模式，使用 `preprocessed_path`、`output_path` 等字段
+- 不论是 `input_paths` 还是模板展开模式，处理顺序都严格按 shard 列表顺序执行
+- `--limit`、resume、输出顺序、`demo --index` 都基于拼接后的全局顺序
 
 ---
 
@@ -566,12 +612,12 @@ reject summary 不再使用 `p50/p90/p95` 这类摘要描述失败样本，而�
 
 ## 10. 统计分析建议
 
-Stage 1 完成后，通过 `stats_log_path`（逐条统计 JSONL）、`summary_log_path`（聚合统计 JSON）和 `stats_plot_dir`（PNG 分布图目录）分析阈值合理性，重点关注：
+Stage 1 完成后，可通过每个 shard 的 `stats.jsonl`、`summary.json`、`plots/`，以及 run 级 `aggregate/stage1_summary.json` 分析阈值合理性，重点关注：
 
 ```python
 import json, statistics
 
-stats = [json.loads(l)["stats"] for l in open("logs/preprocess_stats.jsonl")]
+stats = [json.loads(l)["stats"] for l in open("run_root_dir/stage1/part-00000/stats.jsonl")]
 
 # 压缩比分布
 ratios = [s["compression_ratio"] for s in stats]
@@ -591,7 +637,7 @@ all_script_chars = [c for s in stats for c in s["scripts"]["inline_chars"]]
 print(f"inline script 长度 p50={sorted(all_script_chars)[len(all_script_chars)//2]:,}  max={max(all_script_chars):,}")
 ```
 
-建议额外输出一个 `summary_log_path`，至少包含：
+每个 shard 的 `summary.json` 建议至少包含：
 
 ```json
 {
@@ -608,7 +654,7 @@ print(f"inline script 长度 p50={sorted(all_script_chars)[len(all_script_chars)
 }
 ```
 
-同时输出 `*_reject_reasons.json`，专门用于排查“为什么这一批全被 reject”这类问题。
+同时输出 `summary_reject_reasons.json`，专门用于排查“为什么这一批全被 reject”这类问题。
 
 建议同时输出这些图，便于直接观察阈值位置，而不是只看分位数：
 
@@ -652,7 +698,7 @@ print(f"inline script 长度 p50={sorted(all_script_chars)[len(all_script_chars)
 ```bash
 # Stage 1：预处理（离线，可重复运行调参）
 python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage preprocess
-# 产物：preprocessed.jsonl + preprocess_stats.jsonl + preprocess_rejects.jsonl + preprocess_summary.json + preprocess_plots/
+# 产物：run_root_dir/manifest.json + run_root_dir/stage1/<shard>/... + run_root_dir/aggregate/stage1_summary.json
 
 # 调整阈值后强制重跑（忽略已有输出）
 python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage preprocess --no-resume
@@ -670,6 +716,10 @@ python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --s
 python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --stage preprocess --index 0
 python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --stage rewrite --index 0
 ```
+
+当使用 `input_paths` 或模板展开模式时：
+- `--limit N` 表示只处理拼接后前 `N` 条
+- `demo --index N` 也是按拼接后的总顺序取第 `N` 条
 
 ---
 

@@ -5,7 +5,7 @@
 ## 流程概述
 
 ```
-raw JSONL  →  [Stage 1: 预处理 + 过滤 + 统计可视化]  →  preprocessed JSONL  →  [Stage 2: 模型改写]  →  output JSONL
+input shard JSONL(s)  →  [Stage 1: 预处理 + 过滤 + 统计可视化]  →  stage1/<shard>/preprocessed.jsonl  →  [Stage 2: 模型改写]  →  stage2/<shard>/output.jsonl
 ```
 
 两个阶段通过中间文件解耦，可独立运行、独立 resume。输出结果与输入严格同序，两阶段结果可逐行对应比较。
@@ -33,16 +33,38 @@ html_rewrite/configs/default_local.yaml
 
 默认配置已启用“只保留英文主语言页面”的过滤；如需关闭或调阈值，直接编辑这个文件即可。
 
-必填字段：
+默认推荐配置（模板展开 + run 级分片输出）：
 
 ```yaml
 url: "http://localhost:8000/v1/chat/completions"   # OpenAI-compatible API endpoint
 api_key: "your-api-key"
 model: "your-model-name"
-input_path: "/path/to/raw.jsonl"                   # FineWebEdu 原始 JSONL
-preprocessed_path: "/path/to/preprocessed.jsonl"  # Stage 1 输出 / Stage 2 输入
-output_path: "/path/to/output.jsonl"               # Stage 2 最终输出
+input_dir: "/path/to/raw_dir"
+input_filename_template: "part-{index:05d}.jsonl"
+input_start_index: 0
+input_end_index_exclusive: 100
+run_root_dir: "/path/to/run_20260501"
+output_shard_name_template: "part-{index:05d}"
 ```
+
+这会按顺序展开：
+
+- `/path/to/raw_dir/part-00000.jsonl`
+- `/path/to/raw_dir/part-00001.jsonl`
+- ...
+- `/path/to/raw_dir/part-00099.jsonl`
+
+其中：
+
+- `input_start_index` 是包含式
+- `input_end_index_exclusive` 是不包含式
+
+如果你更喜欢手动指定，也仍然支持：
+
+- `input_path`
+- `input_paths`
+
+但默认推荐模板展开模式。
 
 ### 3. 运行
 
@@ -50,7 +72,7 @@ output_path: "/path/to/output.jsonl"               # Stage 2 最终输出
 # Stage 1：仅预处理（离线，无需 API，可调整阈值反复运行）
 python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage preprocess
 
-# 检查 logs/html_rewrite_stats.jsonl / logs/html_rewrite_summary.json / logs/html_rewrite_plots/ 后，如需调整阈值：
+# 检查 run_root_dir/stage1/<shard>/summary.json 与 plots/ 后，如需调整阈值：
 python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --stage preprocess --no-resume
 
 # Stage 2：模型改写（需要 API 可用）
@@ -66,12 +88,22 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 
 Stage 1 跑完后，通常会看到这些文件或目录：
 
-- `preprocessed_path`：仅 keep 样本，供 Stage 2 使用
-- `stats_log_path`：逐条统计和 `status/reject_reason`
-- `reject_log_path`：被过滤掉的样本
-- `summary_log_path`：聚合统计摘要
-- `stats_plot_dir`：直方图和 reject 原因柱状图
-- `summary_log_path` 同目录下的 `*_reject_reasons.json`：按 reject 原因展开的明细日志
+- `run_root_dir/manifest.json`：输入分片与输出 shard 的固定映射，保证 resume 安全
+- `run_root_dir/stage1/<shard>/preprocessed.jsonl`：该 shard 的 keep 样本
+- `run_root_dir/stage1/<shard>/stats.jsonl`：该 shard 的逐条统计
+- `run_root_dir/stage1/<shard>/rejects.jsonl`：该 shard 的 reject 样本
+- `run_root_dir/stage1/<shard>/summary.json`：该 shard 的 Stage 1 汇总
+- `run_root_dir/stage1/<shard>/summary_reject_reasons.json`：该 shard 的 reject 原因明细
+- `run_root_dir/stage1/<shard>/plots/`：该 shard 的直方图
+- `run_root_dir/stage2/<shard>/output.jsonl`：该 shard 的 Stage 2 输出
+- `run_root_dir/stage2/<shard>/api_calls.jsonl`：该 shard 的 API 调用日志
+- `run_root_dir/aggregate/stage1_summary.json`：所有 shard 的 Stage 1 聚合摘要
+- `run_root_dir/aggregate/stage2_summary.json`：所有 shard 的 Stage 2 聚合摘要
+
+旧模式兼容说明：
+
+- 如果没有设置 `run_root_dir`，程序会退回单文件输出模式
+- 这时会使用 `preprocessed_path`、`output_path`、`stats_log_path`、`summary_log_path` 等旧字段
 
 常用调试方式：
 
@@ -83,6 +115,8 @@ python -m html_rewrite.main --config html_rewrite/configs/default_local.yaml --s
 python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --stage preprocess --index 0
 ```
 
+当使用 `input_paths` 或模板展开模式时，`--limit` 和 `demo --index N` 都是基于“拼接后的总顺序”计数的。
+
 ## 配置参数说明
 
 | 参数 | 默认值 | 说明 |
@@ -90,14 +124,21 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 | `url` | — | API endpoint（必填） |
 | `api_key` | — | API key（必填） |
 | `model` | — | 模型名（必填） |
-| `input_path` | — | 原始 JSONL 路径（必填） |
-| `preprocessed_path` | `preprocessed.jsonl` | Stage 1 输出路径 |
-| `output_path` | `html_rewrite_output.jsonl` | Stage 2 输出路径 |
-| `call_log_path` | `logs/html_rewrite_api_calls.jsonl` | API 原始调用日志 |
-| `stats_log_path` | `logs/html_rewrite_stats.jsonl` | 预处理统计日志 |
-| `reject_log_path` | `logs/html_rewrite_rejects.jsonl` | 被 Stage 1 过滤掉的样本日志 |
-| `summary_log_path` | `logs/html_rewrite_summary.json` | Stage 1 汇总统计 |
-| `stats_plot_dir` | `logs/html_rewrite_plots` | Stage 1 分布图输出目录 |
+| `input_dir` | `""` | 输入目录（模板展开模式） |
+| `input_filename_template` | `""` | 输入文件名模板，例如 `part-{index:05d}.jsonl` |
+| `input_start_index` | `null` | 输入起始 index，包含 |
+| `input_end_index_exclusive` | `null` | 输入结束 index，不包含 |
+| `run_root_dir` | `""` | 分片输出根目录；非空时启用 run 级 shard 模式 |
+| `output_shard_name_template` | `part-{index:05d}` | 输出 shard 目录名模板 |
+| `input_path` | `""` | 兼容旧模式：单个原始 JSONL 路径 |
+| `input_paths` | `[]` | 兼容旧模式：多个原始 JSONL 路径，按列表顺序拼接 |
+| `preprocessed_path` | `preprocessed.jsonl` | 旧模式 Stage 1 输出路径 |
+| `output_path` | `html_rewrite_output.jsonl` | 旧模式 Stage 2 输出路径 |
+| `call_log_path` | `logs/html_rewrite_api_calls.jsonl` | 旧模式 API 原始调用日志 |
+| `stats_log_path` | `logs/html_rewrite_stats.jsonl` | 旧模式预处理统计日志 |
+| `reject_log_path` | `logs/html_rewrite_rejects.jsonl` | 旧模式被 Stage 1 过滤掉的样本日志 |
+| `summary_log_path` | `logs/html_rewrite_summary.json` | 旧模式 Stage 1 汇总统计 |
+| `stats_plot_dir` | `logs/html_rewrite_plots` | 旧模式 Stage 1 分布图输出目录 |
 | `inline_script_max_chars` | `4096` | inline script 截断阈值 |
 | `json_payload_max_chars` | `4096` | JSON payload 截断阈值 |
 | `hidden_input_max_chars` | `4096` | hidden input value 截断阈值 |
@@ -115,7 +156,7 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 
 | 参数 | 推荐值 | 说明 |
 |------|--------|------|
-| `enable_language_filter` | `false` | 是否启用“只保留英文主语言页面” |
+| `enable_language_filter` | `true` | 是否启用“只保留英文主语言页面” |
 | `allowed_languages` | `["en"]` | 允许保留的主语言 |
 | `language_detector` | `langid` | 轻量语言识别器 |
 | `language_min_visible_text_chars` | `200` | 可见文本太短时不做可信语言判断 |
@@ -127,6 +168,10 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
 ## 输出格式
 
 ### Stage 1 输出（preprocessed JSONL）
+
+在默认 shard 模式下，每个输入 shard 对应：
+
+- `run_root_dir/stage1/<shard>/preprocessed.jsonl`
 
 每行一条，仅包含通过 Stage 1 gate 的 keep 样本，字段：
 
@@ -146,7 +191,7 @@ python -m html_rewrite.demo --config html_rewrite/configs/default_local.yaml --s
     "styles": { "external_links": 5, "inline_total": 3, "inline_truncated": 0 },
     "hidden_inputs": { "total": 0, "truncated": 0 },
     "comments": { "total": 3, "truncated": 0 },
-    "formatter": { "parse_ok": true, "node_count_before": 1504, "node_count_after": 1596 }
+    "formatter": { "parse_ok": true, "node_count_before": 1504, "node_count_after": 1596 },
     "language": {
       "declared_lang": "en",
       "detected_lang": "en",
@@ -252,7 +297,7 @@ Stage 1 会额外生成：
 - `total_input / kept / rejected`
 - `reject_reasons`
 - `thresholds`
-- `cleaned_chars / original_chars / visible_text_chars / compression_ratio` 的分布摘要
+- `cleaned_chars / original_chars / visible_text_chars / compression_ratio` 的汇总统计
 - `rule_counts`，用于看各类局部规则的触发频率
 
 默认会画出这些分布：
@@ -358,6 +403,7 @@ html_rewrite/
 ├── stage2_rewrite.py         # Stage 2 批量模型改写（并发 + resume + 有序输出）
 ├── main.py                   # CLI 入口
 ├── demo.py                   # 单条 debug 工具
+├── run_layout.py             # shard 展开、run 目录布局与 manifest 管理
 ├── preprocess/
 │   ├── media.py              # 媒体路径替换
 │   ├── scripts.py            # inline script / JSON payload 截断
