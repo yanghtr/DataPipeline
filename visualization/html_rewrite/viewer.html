@@ -413,8 +413,16 @@ th, td {
   background: #020617;
   color: #dbeafe;
 }
+.response-panel {
+  display: none;
+  border-top: 1px solid #e2e8f0;
+  background: #020617;
+  color: #dbeafe;
+}
 .render-card[data-view="source"] .preview-panel { display: none; }
 .render-card[data-view="source"] .source-panel { display: block; }
+.render-card[data-view="response"] .preview-panel { display: none; }
+.render-card[data-view="response"] .response-panel { display: block; }
 
 .preview-stage {
   padding: 12px;
@@ -452,19 +460,98 @@ th, td {
   background: #fff;
 }
 
-.source-scroll {
+.code-panel {
+  min-width: 0;
+}
+.code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  flex-wrap: wrap;
+}
+.code-toolbar-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+.code-toolbar-hint {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.code-wrap-btn {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #334155;
+  background: #111827;
+  color: #dbeafe;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.code-wrap-btn:hover {
+  background: #1f2937;
+}
+.code-scroll {
+  width: 100%;
   height: var(--preview-frame-height);
   min-height: 280px;
   overflow: auto;
 }
-.source-content {
-  min-height: 100%;
-  padding: 14px;
+.code-lines {
+  width: max-content;
+  min-width: 100%;
+}
+.code-line {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: stretch;
+}
+.code-line:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+.code-line-no {
+  padding: 0 10px 0 12px;
+  border-right: 1px solid #1e293b;
+  color: #475569;
+  text-align: right;
+  user-select: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.7;
+  background: #020617;
+}
+.code-line-text {
+  padding: 0 14px;
+  color: #dbeafe;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
   white-space: pre;
 }
+.code-line-text-inner {
+  display: block;
+  min-width: max-content;
+}
+.render-card[data-code-wrap="on"] .code-lines {
+  width: 100%;
+}
+.render-card[data-code-wrap="on"] .code-line-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.render-card[data-code-wrap="on"] .code-line-text-inner {
+  min-width: 0;
+}
+.tok-tag { color: #7dd3fc; }
+.tok-attr { color: #fbbf24; }
+.tok-string { color: #86efac; }
+.tok-comment { color: #64748b; }
+.tok-doctype { color: #c4b5fd; }
+.tok-punc { color: #cbd5e1; }
 .render-missing {
   display: flex;
   align-items: center;
@@ -499,12 +586,15 @@ th, td {
 .badge-proxy        { background: #ede9fe; color: #6d28d9; }
 .badge-finish       { background: #f3f4f6; color: #374151; }
 .cell-tokens,
-.cell-htmllen,
+.cell-htmlmeta,
+.cell-respmeta,
 .cell-model {
   font-size: 10px;
   color: #64748b;
 }
-.cell-htmllen { margin-left: auto; }
+.cell-htmlmeta,
+.cell-respmeta { white-space: nowrap; }
+.cell-htmlmeta { margin-left: auto; }
 
 /* ── Empty / loading ─────────────────────────────────────── */
 #loading {
@@ -639,6 +729,110 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function formatCount(n) {
+  return n == null ? '' : `${fmtNum(n)} chars`;
+}
+
+function highlightHtmlAttributes(raw) {
+  const attrRe = /([^\s=/>]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+  let out = '';
+  let last = 0;
+  let match;
+
+  while ((match = attrRe.exec(raw)) !== null) {
+    out += escapeHtml(raw.slice(last, match.index));
+    out += `<span class="tok-attr">${escapeHtml(match[1])}</span>`;
+    out += escapeHtml(match[2]);
+    out += `<span class="tok-string">${escapeHtml(match[3] ?? match[4] ?? match[5] ?? '')}</span>`;
+    last = match.index + match[0].length;
+  }
+
+  out += escapeHtml(raw.slice(last));
+  return out;
+}
+
+function highlightHtmlTagToken(token) {
+  if (token.startsWith('<!--')) {
+    return `<span class="tok-comment">${escapeHtml(token)}</span>`;
+  }
+  if (/^<!DOCTYPE/i.test(token)) {
+    return `<span class="tok-doctype">${escapeHtml(token)}</span>`;
+  }
+
+  const nameMatch = token.match(/^<\s*\/?\s*([^\s/>]+)/);
+  if (!nameMatch) {
+    return `<span class="tok-tag">${escapeHtml(token)}</span>`;
+  }
+
+  const tagName = nameMatch[1];
+  const tagNameStart = token.indexOf(tagName);
+  const tagNameEnd = tagNameStart + tagName.length;
+  const suffixLength = token.endsWith('/>') ? 2 : 1;
+  const head = token.slice(0, tagNameStart);
+  const attrs = token.slice(tagNameEnd, token.length - suffixLength);
+  const tail = token.slice(token.length - suffixLength);
+
+  return [
+    `<span class="tok-punc">${escapeHtml(head)}</span>`,
+    `<span class="tok-tag">${escapeHtml(tagName)}</span>`,
+    highlightHtmlAttributes(attrs),
+    `<span class="tok-punc">${escapeHtml(tail)}</span>`,
+  ].join('');
+}
+
+function highlightHtmlLine(line) {
+  if (!line) {
+    return '&nbsp;';
+  }
+
+  const tagRe = /<!--[\s\S]*?-->|<!DOCTYPE[^>]*>|<\/?[A-Za-z][^>]*?>/gi;
+  let out = '';
+  let last = 0;
+  let match;
+
+  while ((match = tagRe.exec(line)) !== null) {
+    out += escapeHtml(line.slice(last, match.index));
+    out += highlightHtmlTagToken(match[0]);
+    last = match.index + match[0].length;
+  }
+
+  out += escapeHtml(line.slice(last));
+  return out || '&nbsp;';
+}
+
+function highlightResponseLine(line) {
+  const trimmed = line.trimStart();
+  if (!line) {
+    return '&nbsp;';
+  }
+  if (trimmed.startsWith('<') && trimmed.includes('>')) {
+    return highlightHtmlLine(line);
+  }
+  if (trimmed.startsWith('```')) {
+    return `<span class="tok-doctype">${escapeHtml(line)}</span>`;
+  }
+  if (trimmed.startsWith('<!--') || trimmed.startsWith('#')) {
+    return `<span class="tok-comment">${escapeHtml(line)}</span>`;
+  }
+  return escapeHtml(line);
+}
+
+function renderCodeBlockHtml(text, mode) {
+  const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n');
+  const highlighter = mode === 'html' ? highlightHtmlLine : highlightResponseLine;
+
+  return `
+    <div class="code-lines">
+      ${lines.map((line, idx) => `
+        <div class="code-line">
+          <span class="code-line-no">${idx + 1}</span>
+          <span class="code-line-text"><span class="code-line-text-inner">${highlighter(line)}</span></span>
+        </div>
+      `).join('')}
+    </div>`;
 }
 
 function truncateUrl(url, n = 60) {
@@ -811,27 +1005,46 @@ function buildHeader() {
 function buildPreviewCard({
   previewUrl,
   sourceUrl,
+  responseUrl,
   openUrl,
   title,
   note,
   badges,
   model,
   tokens,
-  htmlLen,
+  htmlCharCount,
+  htmlSizeLabel,
+  responseCharCount,
 }) {
   const badgeHtml = (badges || []).join('');
   const modelHtml = model ? `<span class="cell-model">${escapeHtml(model)}</span>` : '';
   const tokenHtml = tokens ? `<span class="cell-tokens">${escapeHtml(tokens)}</span>` : '';
-  const lenHtml = htmlLen ? `<span class="cell-htmllen">${escapeHtml(htmlLen)}</span>` : '';
+  const htmlMeta = htmlCharCount != null
+    ? `<span class="cell-htmlmeta">HTML ${escapeHtml(formatCount(htmlCharCount))}${htmlSizeLabel ? ` · ${escapeHtml(htmlSizeLabel)}` : ''}</span>`
+    : '';
+  const responseMeta = responseCharCount
+    ? `<span class="cell-respmeta">回复 ${escapeHtml(formatCount(responseCharCount))}</span>`
+    : '';
+  const responseBtn = responseUrl
+    ? '<button class="view-btn" type="button" data-view="response">完整回复</button>'
+    : '';
 
   return `
     <div class="render-cell">
-      <div class="render-card" data-view="preview" data-source-url="${escapeHtml(sourceUrl)}" data-source-state="idle">
+      <div
+        class="render-card"
+        data-view="preview"
+        data-code-wrap="off"
+        data-source-url="${escapeHtml(sourceUrl || '')}"
+        data-source-state="idle"
+        data-response-url="${escapeHtml(responseUrl || '')}"
+        data-response-state="idle">
         <div class="card-topbar">
           <div class="card-topbar-left">
             <div class="view-switch">
               <button class="view-btn active" type="button" data-view="preview">预览</button>
               <button class="view-btn" type="button" data-view="source">HTML</button>
+              ${responseBtn}
             </div>
             <span class="card-note">${escapeHtml(note || title || '')}</span>
           </div>
@@ -857,8 +1070,31 @@ function buildPreviewCard({
             </div>
           </div>
           <div class="source-panel">
-            <div class="source-scroll">
-              <pre class="source-content">点击 “HTML” 查看源码…</pre>
+            <div class="code-panel">
+              <div class="code-toolbar">
+                <div>
+                  <div class="code-toolbar-title">HTML 源码</div>
+                  <div class="code-toolbar-hint">默认保持单行并显示横向滚动条。</div>
+                </div>
+                <button class="code-wrap-btn" type="button" data-wrap-target="source">Break Line</button>
+              </div>
+              <div class="code-scroll">
+                <div class="source-content">点击 “HTML” 查看源码…</div>
+              </div>
+            </div>
+          </div>
+          <div class="response-panel">
+            <div class="code-panel">
+              <div class="code-toolbar">
+                <div>
+                  <div class="code-toolbar-title">完整模型回复</div>
+                  <div class="code-toolbar-hint">默认保持单行并显示横向滚动条。</div>
+                </div>
+                <button class="code-wrap-btn" type="button" data-wrap-target="response">Break Line</button>
+              </div>
+              <div class="code-scroll">
+                <div class="response-content">点击 “完整回复” 查看模型原始输出…</div>
+              </div>
             </div>
           </div>
         </div>
@@ -867,7 +1103,8 @@ function buildPreviewCard({
         ${badgeHtml}
         ${modelHtml}
         ${tokenHtml}
-        ${lenHtml}
+        ${responseMeta}
+        ${htmlMeta}
       </div>
     </div>`;
 }
@@ -937,6 +1174,7 @@ function buildRows(rows) {
         tdLive.innerHTML = buildPreviewCard({
           previewUrl: `/live/${row.row_idx}`,
           sourceUrl: `/source/live/${row.row_idx}`,
+          responseUrl: '',
           openUrl: liveUrl,
           title: `原站预览 · row ${row.row_idx + 1}`,
           note: '本地代理嵌入原站',
@@ -946,7 +1184,9 @@ function buildRows(rows) {
           ],
           model: '',
           tokens: '',
-          htmlLen: '',
+          htmlCharCount: null,
+          htmlSizeLabel: '',
+          responseCharCount: 0,
         });
       }
       tr.appendChild(tdLive);
@@ -977,6 +1217,7 @@ function buildRows(rows) {
         td.innerHTML = buildPreviewCard({
           previewUrl: renderUrl,
           sourceUrl: `/source/column/${col.idx}/${row.row_idx}`,
+          responseUrl: col.field === 'output_html' ? `/response/column/${col.idx}/${row.row_idx}` : '',
           openUrl: renderUrl,
           title: `${col.label} · row ${row.row_idx + 1}`,
           note: '桌面视口整体缩放预览',
@@ -986,7 +1227,9 @@ function buildRows(rows) {
           ].filter(Boolean),
           model: cell.model || '',
           tokens: tokenInfo,
-          htmlLen: fmtKB(cell.html_len),
+          htmlCharCount: cell.html_char_len,
+          htmlSizeLabel: fmtKB(cell.html_len),
+          responseCharCount: cell.response_len || 0,
         });
       }
       tr.appendChild(td);
@@ -1025,6 +1268,7 @@ function renderCurrentPage() {
   buildVisibilityPanel();
   buildHeader();
   buildRows(state.currentRows);
+  document.querySelectorAll('.render-card').forEach(card => setCardWrapState(card, false));
   updateColumnCount();
   updateEmptyState();
   applyResponsiveLayout();
@@ -1104,29 +1348,68 @@ async function addColumn() {
   }
 }
 
-async function ensureSourceLoaded(card) {
-  const stateValue = card.dataset.sourceState;
+const CODE_VIEW_CONFIG = {
+  source: {
+    stateKey: 'sourceState',
+    urlKey: 'sourceUrl',
+    selector: '.source-content',
+    emptyMessage: '没有可加载的 HTML 源码。',
+    loadingMessage: '源码加载中…',
+    errorPrefix: '源码加载失败: ',
+    mode: 'html',
+  },
+  response: {
+    stateKey: 'responseState',
+    urlKey: 'responseUrl',
+    selector: '.response-content',
+    emptyMessage: '当前记录没有保存完整模型回复。',
+    loadingMessage: '完整回复加载中…',
+    errorPrefix: '完整回复加载失败: ',
+    mode: 'response',
+  },
+};
+
+function setCardWrapState(card, enabled) {
+  card.dataset.codeWrap = enabled ? 'on' : 'off';
+  card.querySelectorAll('.code-wrap-btn').forEach(btn => {
+    btn.textContent = enabled ? 'No Wrap' : 'Break Line';
+  });
+}
+
+async function ensureCodeViewLoaded(card, view) {
+  const config = CODE_VIEW_CONFIG[view];
+  if (!config) {
+    return;
+  }
+
+  const stateValue = card.dataset[config.stateKey];
   if (stateValue === 'loaded' || stateValue === 'loading') {
     return;
   }
 
-  const pre = card.querySelector('.source-content');
-  const sourceUrl = card.dataset.sourceUrl;
-  if (!sourceUrl) {
-    pre.textContent = '没有可加载的源码。';
-    card.dataset.sourceState = 'loaded';
+  const container = card.querySelector(config.selector);
+  const url = card.dataset[config.urlKey];
+  if (!container) {
+    return;
+  }
+  if (!url) {
+    container.innerHTML = renderCodeBlockHtml(config.emptyMessage, 'response');
+    card.dataset[config.stateKey] = 'loaded';
     return;
   }
 
-  card.dataset.sourceState = 'loading';
-  pre.textContent = '源码加载中…';
+  card.dataset[config.stateKey] = 'loading';
+  container.innerHTML = renderCodeBlockHtml(config.loadingMessage, 'response');
   try {
-    const text = await fetchText(sourceUrl);
-    pre.textContent = text || '— 空 HTML —';
-    card.dataset.sourceState = 'loaded';
+    const text = await fetchText(url);
+    container.innerHTML = renderCodeBlockHtml(
+      text || (view === 'source' ? '— 空 HTML —' : '— 空回复 —'),
+      config.mode,
+    );
+    card.dataset[config.stateKey] = 'loaded';
   } catch (e) {
-    pre.textContent = '源码加载失败: ' + e.message;
-    card.dataset.sourceState = 'error';
+    container.innerHTML = renderCodeBlockHtml(config.errorPrefix + e.message, 'response');
+    card.dataset[config.stateKey] = 'error';
   }
 }
 
@@ -1135,8 +1418,8 @@ async function switchCardView(card, view) {
   card.querySelectorAll('.view-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.view === view);
   });
-  if (view === 'source') {
-    await ensureSourceLoaded(card);
+  if (view === 'source' || view === 'response') {
+    await ensureCodeViewLoaded(card, view);
   }
 }
 
@@ -1213,14 +1496,23 @@ document.getElementById('column-toggle-list').addEventListener('change', event =
 
 document.getElementById('table-body').addEventListener('click', event => {
   const btn = event.target.closest('.view-btn');
-  if (!btn) {
+  if (btn) {
+    const card = btn.closest('.render-card');
+    if (!card) {
+      return;
+    }
+    switchCardView(card, btn.dataset.view);
     return;
   }
-  const card = btn.closest('.render-card');
-  if (!card) {
-    return;
+
+  const wrapBtn = event.target.closest('.code-wrap-btn');
+  if (wrapBtn) {
+    const card = wrapBtn.closest('.render-card');
+    if (!card) {
+      return;
+    }
+    setCardWrapState(card, card.dataset.codeWrap !== 'on');
   }
-  switchCardView(card, btn.dataset.view);
 });
 
 document.addEventListener('keydown', event => {

@@ -134,6 +134,7 @@ def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
                 "id": rec_id,
                 "_meta": rec.get("_meta", {}),
                 "preprocessed_html": preprocessed_html,
+                "response": message.get("content", ""),
                 "output_html": output_html,
                 "preprocess_stats": rec.get("preprocess_stats", {}),
                 "model": resp_data.get("model", cfg.model),

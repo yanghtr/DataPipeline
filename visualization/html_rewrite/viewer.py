@@ -403,6 +403,7 @@ class Column:
         id_order: list[str],
         meta: dict[str, dict],
         html_data: dict[str, str],
+        response_data: dict[str, str],
         total_in_file: int,
     ) -> None:
         self.uid = -1
@@ -412,6 +413,7 @@ class Column:
         self.id_order = id_order
         self.meta = meta
         self.html_data = html_data
+        self.response_data = response_data
         self.total_in_file = total_in_file
         self.loaded = len(id_order)
 
@@ -448,6 +450,67 @@ def _extract_meta(record: dict) -> dict:
         "finish_reason": record.get("finish_reason", ""),
         "preprocess_stats": _compress_stats(record.get("preprocess_stats", {})),
     }
+
+
+def _stringify_textish(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    return str(value)
+
+
+def _extract_response_text(record: dict) -> str | None:
+    """
+    尽量从不同格式的记录里提取“完整模型回复”。
+    优先返回消息文本；若只有结构化响应对象，则 pretty-print JSON。
+    """
+    direct_keys = (
+        "response",
+        "raw_response",
+        "response_text",
+        "model_response",
+        "assistant_response",
+        "output_text",
+        "raw_completion",
+        "reply",
+        "completion",
+    )
+    for key in direct_keys:
+        value = _stringify_textish(record.get(key))
+        if value:
+            return value
+
+    message = record.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        value = _stringify_textish(content)
+        if value:
+            return value
+        return _stringify_textish(message)
+
+    choices = record.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                value = _stringify_textish(content)
+                if value:
+                    return value
+            value = _stringify_textish(first)
+            if value:
+                return value
+
+    response_data = record.get("response_data") or record.get("api_response")
+    value = _stringify_textish(response_data)
+    if value:
+        return value
+
+    return None
 
 
 def load_column(
@@ -493,6 +556,7 @@ def load_column(
     id_order: list[str] = []
     meta: dict[str, dict] = {}
     html_data: dict[str, str] = {}
+    response_data: dict[str, str] = {}
 
     for obj in selected:
         rec_id = _get_id(obj)
@@ -501,8 +565,11 @@ def load_column(
         id_order.append(rec_id)
         html_data[rec_id] = obj[field]
         meta[rec_id] = _extract_meta(obj)
+        response_text = _extract_response_text(obj)
+        if response_text:
+            response_data[rec_id] = response_text
 
-    col = Column(path, field, label, id_order, meta, html_data, total)
+    col = Column(path, field, label, id_order, meta, html_data, response_data, total)
     logger.info(f"[load] 完成: {col.loaded:,} 条（文件总行 {total:,}）label={label!r}")
     return col
 
@@ -699,6 +766,22 @@ def source_live(row_idx: int):
     return text, status, {"Content-Type": "text/plain; charset=utf-8"}
 
 
+@app.route("/response/column/<int:col_idx>/<int:row_idx>")
+def response_column(col_idx: int, row_idx: int):
+    with _state_lock:
+        if col_idx < 0 or col_idx >= len(_columns):
+            return "— 无数据 —", 200, {"Content-Type": "text/plain; charset=utf-8"}
+        if row_idx < 0 or row_idx >= len(_row_ids):
+            return "— 无数据 —", 200, {"Content-Type": "text/plain; charset=utf-8"}
+        col = _columns[col_idx]
+        rec_id = _row_ids[row_idx]
+        response_text = col.response_data.get(rec_id)
+
+    if response_text:
+        return response_text, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    return "当前记录没有保存完整模型回复。", 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
 @app.route("/api/info")
 def api_info():
     with _state_lock:
@@ -739,13 +822,17 @@ def api_rows():
             for col in _columns:
                 if rec_id in col.html_data:
                     meta = col.meta.get(rec_id, {})
+                    response_text = col.response_data.get(rec_id, "")
                     cells.append({
                         "has_html": True,
                         "html_len": len(col.html_data[rec_id]),
+                        "html_char_len": len(col.html_data[rec_id]),
                         "model": meta.get("model", ""),
                         "prompt_tokens": meta.get("prompt_tokens"),
                         "completion_tokens": meta.get("completion_tokens"),
                         "finish_reason": meta.get("finish_reason", ""),
+                        "has_response": bool(response_text),
+                        "response_len": len(response_text) if response_text else 0,
                     })
                 else:
                     cells.append({"has_html": False})
