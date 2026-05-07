@@ -156,7 +156,7 @@ for f in "${INPUT_FILES[@]}"; do
     echo "│  ── $sub"
     python "$SCRIPT_DIR/html_render.py" filter \
         --issues          "$ISSUES_FILE" \
-        --input           "$src_dir" \
+        --input           "$DATA_DIR/$f" \
         --output          "$out_sub" \
         --level           "$FILTER_LEVEL" \
         --json_dir        "$DATA_DIR" \
@@ -263,7 +263,7 @@ ax2.tick_params(axis="y", labelcolor="#888888")
 
 for i, (o, r) in enumerate(zip(originals, removed_)):
     p = round(r / max(o, 1) * 100, 1)
-    ax1.text(xs[i], o + y1_max * 0.012, f"{p:.1f}%",
+    ax1.text(xs[i], o + y1_max * 0.012, f"{r}/{o}\n{p:.1f}%",
              ha="center", va="bottom", fontsize=7, color="#B71C1C")
 
 ax2.text(x_total, total_o + y2_max * 0.012,
@@ -301,6 +301,7 @@ stats_dir.mkdir(parents=True, exist_ok=True)
 
 try:
     from PIL import Image as _PIL
+    import numpy as np
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -327,14 +328,21 @@ print(f"扫描 {n} 张图片")
 
 ratios = [h / w for w, h in zip(widths, heights) if w > 0]
 
-# 宽度/高度分布
+# 宽度/高度分布（x 轴截到 99 百分位，避免少量极端值撑大空间）
+w_max = float(np.percentile(widths, 99)) * 1.05
+h_max = float(np.percentile(heights, 99)) * 1.05
+
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-axes[0].hist(widths,  bins=60, color="steelblue", edgecolor="white")
+axes[0].hist(widths,  bins=60, color="steelblue", edgecolor="white", range=(0, w_max))
+axes[0].set_xlim(0, w_max)
+axes[0].xaxis.set_major_locator(plt.MaxNLocator(nbins=15, integer=True))
 axes[0].set_title(f"Width distribution  (n={n})")
 axes[0].set_xlabel("Width (px)")
 axes[0].set_ylabel("Count")
 
-axes[1].hist(heights, bins=60, color="coral", edgecolor="white")
+axes[1].hist(heights, bins=60, color="coral", edgecolor="white", range=(0, h_max))
+axes[1].set_xlim(0, h_max)
+axes[1].xaxis.set_major_locator(plt.MaxNLocator(nbins=15, integer=True))
 axes[1].set_title(f"Height distribution  (n={n})")
 axes[1].set_xlabel("Height (px)")
 

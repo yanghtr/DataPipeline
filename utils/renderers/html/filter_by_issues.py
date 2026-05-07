@@ -82,7 +82,10 @@ class _PangumlWriter:
         self.skipped = 0
 
     def emit(self, record: dict, sanitized_id: str, stem: str) -> None:
-        png_path = self.images_dir / stem / f"{sanitized_id}.png"
+        stem_dir = self.images_dir / stem
+        if not stem_dir.is_dir():
+            return  # file was never rendered (e.g. api_calls.jsonl), not a skip
+        png_path = stem_dir / f"{sanitized_id}.png"
         if not png_path.exists():
             self.skipped += 1
             return
@@ -387,7 +390,7 @@ def _generate_filter_charts(
     # ── 每文件百分比标注 ──────────────────────────────────────
     for i, (o, r) in enumerate(zip(originals, removed)):
         pct = round(r / max(o, 1) * 100, 1)
-        ax1.text(xs[i], o + y1_max * 0.012, f"{pct:.1f}%",
+        ax1.text(xs[i], o + y1_max * 0.012, f"{r}/{o}\n{pct:.1f}%",
                  ha="center", va="bottom", fontsize=7, color="#B71C1C")
 
     # ── 总计标注 ──────────────────────────────────────────────
