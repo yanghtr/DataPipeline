@@ -5,24 +5,29 @@
 1. [整体架构](#1-整体架构)
 2. [日志格式与解读](#2-日志格式与解读)
 3. [渲染阶段详解](#3-渲染阶段详解)
-   - 3.1 CDN 离线缓存
+   - 3.1 CDN 离线缓存与字体鲁棒性
    - 3.2 图表动画禁用
    - 3.3 页面导航策略
    - 3.4 网络等待（切片等待 + 多轮重试）
    - 3.5 无限拉长检测
    - 3.6 文字叠压检测
-   - 3.7 系统负载自适应
-   - 3.8 浏览器管理与定期回收
-   - 3.9 断点续跑与幂等输出
+   - 3.7 高宽比检测
+   - 3.8 系统负载自适应
+   - 3.9 浏览器管理与定期回收
+   - 3.10 断点续跑与幂等输出
 4. [解析阶段详解](#4-解析阶段详解)
 5. [过滤阶段详解](#5-过滤阶段详解)
+   - 5.1 source_file stem 的计算
+   - 5.2 过滤模式
+   - 5.3 统计与图表输出
+   - 5.4 Resume 与统计正确性
 6. [已知局限与权衡](#6-已知局限与权衡)
 
 ---
 
 ## 1. 整体架构
 
-### 1.1 三阶段流水线
+### 1.1 四阶段流水线
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -41,11 +46,12 @@
 │                ├─ 全页滚动触发 lazy paint                            │
 │                ├─ 切片等待 networkidle + 无限拉长检测                 │
 │                ├─ 文字叠压检测                                        │
+│                ├─ 高宽比检测（tall_ratio_threshold）                  │
 │                └─ full_page screenshot → {id}.png                  │
 │                                                                     │
-│  输出: PNG 文件 + 结构化日志(stderr)                                  │
+│  输出: PNG 文件 + 结构化日志(stderr，追加模式)                         │
 └─────────────────────────────────────────────────────────────────────┘
-                              │ stderr 重定向到 render.log
+                              │ stderr 追加到 render.log
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 阶段 2: parse_render_log.py                                          │
@@ -63,15 +69,27 @@
 │                                                                     │
 │  issues.json + 原数据 → 剔除问题 id → 干净数据副本                    │
 │  原文件不变，保留原格式（编码/BOM/缩进/分隔符）                         │
+│  --summary_json 写出机器可读统计 → 供跨子目录聚合                     │
+│  --stats_dir 生成 drop_ratio.png 过滤比例图                          │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ 阶段 4: run.sh 内嵌统计                                               │
+│                                                                     │
+│  汇总各子目录的 summary JSON → 全局统计打印                            │
+│  扫描 images_dir/*.png (PIL) → 宽度/高度/高宽比分布图 (matplotlib)    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 1.2 关键设计原则
 
 - **幂等**：截图已存在则跳过，支持随时中断重启。
+- **日志追加**：render 日志以追加模式写入，resume 后 parse+filter 看到完整历史，统计不丢失。
 - **日志与渲染分离**：所有质量问题只记录日志，不影响截图输出。下游根据日志决定是否丢弃。
 - **症状检测而非规则枚举**：不去识别"哪种代码会触发问题"，而是直接观测渲染后的症状（页面高度、元素位置），对未来新的触发来源自然有效。
 - **可观测性**：每条日志都携带结构化 key=value 字段，便于离线统计和正则解析。
+- **字体 CDN 不影响过滤**：Google Fonts 等装饰性资源失败降为 WARN，不触发记录剔除。
 
 ---
 
@@ -96,8 +114,9 @@
 | `TIMEOUT` | ERROR | goto 或 screenshot 超时 | `stage` (goto/screenshot) |
 | `WAIT_TIMEOUT` | WARN | networkidle 单轮等待超时，已重试 | `attempt`, `max_wait`, `factor` |
 | `WAIT_FINAL_TIMEOUT` | WARN | 两轮等待均超时，强制截图 | — |
-| `REQUEST_FAILED` | ERROR | 网络请求失败 | `type`, `url`, `reason` |
-| `HTTP_ERROR` | ERROR | HTTP 4xx/5xx 响应 | `type`, `status`, `url` |
+| `REQUEST_FAILED` | ERROR/WARN | 网络请求失败（字体/装饰性 CDN 为 WARN） | `type`, `url`, `reason` |
+| `HTTP_ERROR` | ERROR/WARN | HTTP 4xx/5xx 响应（字体/装饰性 CDN 为 WARN） | `type`, `status`, `url` |
+| `TALL_PAGE` | WARN | 截图高宽比超过 tall_ratio_threshold | `ratio`, `width`, `height` |
 | `PAGE_ERROR` | ERROR | 页面 JS 运行时抛出的异常 | `msg` |
 | `CONSOLE_ERROR` | WARN | 页面 console.error 输出 | `msg` |
 | `EMPTY_OUTPUT` | ERROR | 截图文件缺失或 < 1KB | `size`, `path` |
@@ -140,7 +159,7 @@
 
 ## 3. 渲染阶段详解
 
-### 3.1 CDN 离线缓存
+### 3.1 CDN 离线缓存与字体鲁棒性
 
 **背景**：大规模数据集中的 HTML 通常引用 jsDelivr / unpkg / cdnjs 等 CDN 上的 JS/CSS 库。逐条渲染时，每次都去拉网络有三个问题：
 1. 速度慢（几十 ms/次 × 几十万条 = 几小时）
@@ -177,6 +196,10 @@ fulfill 时强制设置:
 ```
 
 **为什么 LRU 用进程内而不是跨进程共享**：multiprocessing.Pool 的 worker 是独立进程，共享内存实现复杂、有锁竞争。同一个进程渲染的 N 条记录大概率使用相同的库，进程内 LRU 已能大幅减少磁盘读。
+
+**字体 CDN 不可达的处理**：Google Fonts、fonts.gstatic.com 等在某些网络环境下频繁返回 404 或超时（CDN 预下载失败），但字体缺失只影响视觉样式，不影响页面结构和核心内容渲染。因此：
+- `REQUEST_FAILED` / `HTTP_ERROR`：若资源类型为 `font`，或 URL 域名属于 `_DECORATIVE_DOMAINS`（Google Fonts、FontAwesome 等），降级为 **WARN**，不产生 ERROR。
+- 这样字体失败不会导致记录被过滤，但仍可通过 `--level warn` 或手动查看日志追踪。
 
 ### 3.2 图表动画禁用
 
@@ -339,7 +362,18 @@ JS 注入在截图前执行:
 **`worst_ratio=100` 的含义**：
 重叠面积 / min(面积A, 面积B) = 1.0（100%），即两元素完全重叠，通常是两个绝对定位的相同元素叠在同一坐标。
 
-### 3.7 系统负载自适应
+### 3.7 高宽比检测
+
+截图完成后，用 PIL 读取图片尺寸，若 `height / width > tall_ratio_threshold`（默认 4.0）则记录 `WARN TALL_PAGE`。
+
+**与无限拉长检测的关系**：
+- 无限拉长检测在渲染过程中（等待 networkidle 期间）运行，命中时截图仍然产生。
+- 高宽比检测在截图后运行，作为补充保险：即使拉长检测漏判（如页面慢速增长但超过阈值才停），高宽比检测仍能捕获异常长图。
+- 两者都只记录 WARN，由下游过滤策略决定是否丢弃。
+
+`tall_ratio_threshold` 在 `run.sh` 中默认 **4.0**，可通过 `--tall_ratio F` 调整。
+
+### 3.8 系统负载自适应
 
 **背景**：在多任务共享的机器上（如集群节点），系统负载高时，Playwright 的 `wait_for_load_state` 和截图都更慢。如果超时参数是固定的，高负载时误判率显著上升。
 
@@ -356,7 +390,7 @@ JS 注入在截图前执行:
 
 **Windows 上无 `getloadavg`**：退化为 1.0×，不影响功能。
 
-### 3.8 浏览器管理与定期回收
+### 3.9 浏览器管理与定期回收
 
 **架构**：主进程 → `multiprocessing.Pool(N)` → N 个 worker 进程，每个 worker 独立持有一个 Chromium 实例。
 
@@ -367,9 +401,15 @@ Chromium 长时间运行会出现内存碎片积累、句柄泄漏、偶发的�
 
 **进度条聚合**：N 个 worker 进程通过 `multiprocessing.Manager().Queue()` 汇报进度，主进程的 `threading.Thread` 消费队列更新 tqdm。
 
-### 3.9 断点续跑与幂等输出
+### 3.10 断点续跑与幂等输出
 
 **断点续跑**：每次运行前 `os.scandir(out_dir)` 列出已存在的 `*.png`，构建 `existing` 集合，跳过已完成的 id。即使中途中断，重启后从断点继续，不重复渲染。
+
+**日志追加**：run.sh 使用 `>>` 追加模式写 render.log，保留历史 WARN/ERROR。后续 parse 解析完整累积日志，filter 基于完整 issues.json 过滤，统计不因 resume 而失真。使用 `--no-resume` 可清空日志重新记录（已有 PNG 不受影响）。
+
+**统计正确性**：
+- 若 render 日志以 `>` 覆盖，resume 跳过的记录不在新日志里，parse 只能看到"这次渲染的"问题，filter 会漏掉历史问题记录 → 过滤不充分。
+- 追加模式下，parse 始终看到全量历史，filter 统计准确。
 
 **幂等 ID 处理**：
 - 原始 id 字段（如 URL、含冒号的 record_uid）不能直接用作文件名。
@@ -463,7 +503,33 @@ stem     = "part_01_output"
 
 通常推荐 `error` 级别先过一遍，再根据实际需要决定是否用 `all` 进一步清洗。
 
-### 5.3 JSONL 格式的处理
+### 5.3 统计与图表输出
+
+`--summary_json FILE` 写出机器可读 JSON：
+```json
+{
+  "original":          3638,   // 实际参与过滤的文件总条目（不含直通文件）
+  "removed":           495,
+  "kept":              3143,
+  "passthrough_items": 3649,   // 直通文件（无对应 issue stem）的条目总数
+  "panguml_written":   3143,
+  "panguml_skipped":   3649
+}
+```
+
+run.sh 在所有子目录过滤完成后，用内嵌 Python 聚合各子目录的 summary JSON，打印全局统计。
+
+`--stats_dir DIR` 生成 `drop_ratio.png`（各过滤文件的剔除比例柱状图，需要 matplotlib）。阶段 4 另外生成 `image_dimensions.png` 和 `image_ratio.png`（所有 PNG 的尺寸/高宽比分布，需 PIL + matplotlib）。
+
+**直通文件与过滤文件分离**：`api_calls.jsonl` 这类没有对应 stem 的文件归为"直通"，统计上与实际过滤的 `output.jsonl` 分开显示，避免两者混在总条目数里产生误导。
+
+### 5.4 Resume 与统计正确性
+
+render 日志以追加模式（`>>`）写入，每次 parse 解析完整累积日志，filter 基于累积 issues.json 做过滤：
+- resume 续跑时，已渲染记录的历史 WARN/ERROR 仍在日志中 → filter 正确剔除历史问题 id
+- 全新跑（`--no-resume`）时，`run.sh` 先清空日志文件，再以 `>>` 追加
+
+### 5.5 JSONL 格式的处理
 
 JSON 数组和 JSONL 的过滤方式不同：
 - **JSON 数组**：整个文件 `json.load()` → 过滤 list → `json.dump()` 写回，自动探测原文件缩进/BOM/分隔符保持一致。
@@ -471,7 +537,7 @@ JSON 数组和 JSONL 的过滤方式不同：
 
 **为什么 JSONL 不重新 dump**：重新 `json.dumps()` 每行会损失原始格式（如 key 顺序、空格风格），逐行原样写回更安全。
 
-### 5.4 ID 匹配的一致性
+### 5.6 ID 匹配的一致性
 
 过滤时用相同的 `_sanitize_id()` 处理原始 id，与渲染时写入 log 的 item_id 保持一致：
 

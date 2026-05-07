@@ -36,6 +36,23 @@ except ImportError:
 # =========================================================
 _SANITIZE_RE = re.compile(r'[^\w\-.]')
 
+# 这些域的资源（字体、图标等）加载失败不影响核心渲染质量，降为 WARN
+_DECORATIVE_DOMAINS = frozenset([
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "use.fontawesome.com",
+    "ka-f.fontawesome.com",
+])
+
+
+def _is_decorative_url(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower()
+        return any(host == d or host.endswith("." + d) for d in _DECORATIVE_DOMAINS)
+    except Exception:
+        return False
+
 
 def _sanitize_id(raw_id) -> str:
     """将任意字符串转为合法文件名（保留字母数字 - . _，其余换成 _）。"""
@@ -857,14 +874,21 @@ def _render_one(task, context, body_cache,
                 pass
 
     # -------- 汇总异常 --------
+    # 字体/装饰性 CDN 失败不影响核心渲染，降为 WARN 避免污染 issues
     for url, rtype, reason in failed_requests:
-        _log_error("REQUEST_FAILED", log_id, type=rtype, url=url, reason=reason)
+        if rtype == "font" or _is_decorative_url(url):
+            _log_warn("REQUEST_FAILED", log_id, type=rtype, url=url, reason=reason)
+        else:
+            _log_error("REQUEST_FAILED", log_id, type=rtype, url=url, reason=reason)
 
     failed_urls = {u for u, _, _ in failed_requests}
     for url, status, rtype in http_errors:
         if url in failed_urls:
             continue
-        _log_error("HTTP_ERROR", log_id, type=rtype, status=status, url=url)
+        if rtype == "font" or _is_decorative_url(url):
+            _log_warn("HTTP_ERROR", log_id, type=rtype, status=status, url=url)
+        else:
+            _log_error("HTTP_ERROR", log_id, type=rtype, status=status, url=url)
 
     for err in page_errors:
         _log_error("PAGE_ERROR", log_id, msg=err)

@@ -326,6 +326,91 @@ def filter_file(src: Path, out_dir: Path,
     return _filter_json_array(src, out_dir, blocked, id_field, panguml_writer, stem)
 
 
+def _generate_filter_charts(
+    file_results: list[tuple],   # [(name, original, removed, had_blocked)]
+    stats_dir: Path,
+) -> None:
+    """
+    生成堆叠柱状图：每列 = 保留（绿）+ 剔除（红），末列 = 全局总计（右轴独立刻度）。
+    需要 matplotlib。
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("[STATS] matplotlib 未安装，跳过图表生成")
+        return
+
+    stats_dir.mkdir(parents=True, exist_ok=True)
+
+    # 所有有数据的文件（含直通文件，让读者看到完整比例）
+    all_data = [(n, o, r) for n, o, r, _hb in file_results if o > 0]
+    if not all_data:
+        return
+
+    names     = [n for n, _, _ in all_data]
+    originals = [o for _, o, _ in all_data]
+    removed   = [r for _, _, r in all_data]
+    kept      = [o - r for o, r in zip(originals, removed)]
+
+    total_orig  = sum(originals)
+    total_rm    = sum(removed)
+    total_kept  = total_orig - total_rm
+    total_pct   = round(total_rm / max(total_orig, 1) * 100, 1)
+
+    n = len(all_data)
+    xs = list(range(n))
+    x_total = n          # 总计柱位置
+    W = 0.65             # 柱宽
+
+    fig, ax1 = plt.subplots(figsize=(max(7, (n + 2) * 1.5), 6))
+    ax2 = ax1.twinx()    # 右轴：总计柱独立刻度
+
+    # ── 每文件堆叠柱（左轴）──────────────────────────────────
+    y1_max = max(originals) * 1.30
+    ax1.set_ylim(0, y1_max)
+    bk = ax1.bar(xs, kept,    color="#43A047", edgecolor="white", width=W, label="kept")
+    br = ax1.bar(xs, removed, bottom=kept,
+                 color="#E53935", edgecolor="white", width=W, label="removed")
+    ax1.set_ylabel("Count (per file)", fontsize=10)
+
+    # ── 总计柱（右轴）────────────────────────────────────────
+    y2_max = total_orig * 1.30
+    ax2.set_ylim(0, y2_max)
+    ax2.bar(x_total, total_kept, color="#43A047", alpha=0.80, edgecolor="white", width=W)
+    ax2.bar(x_total, total_rm,   bottom=total_kept,
+            color="#E53935", alpha=0.80, edgecolor="white", width=W)
+    ax2.set_ylabel("Count (total, right axis)", fontsize=10, color="#888888")
+    ax2.tick_params(axis="y", labelcolor="#888888")
+
+    # ── 每文件百分比标注 ──────────────────────────────────────
+    for i, (o, r) in enumerate(zip(originals, removed)):
+        pct = round(r / max(o, 1) * 100, 1)
+        ax1.text(xs[i], o + y1_max * 0.012, f"{pct:.1f}%",
+                 ha="center", va="bottom", fontsize=7, color="#B71C1C")
+
+    # ── 总计标注 ──────────────────────────────────────────────
+    ax2.text(x_total, total_orig + y2_max * 0.012,
+             f"{total_pct:.1f}%\n({total_rm:,}/{total_orig:,})",
+             ha="center", va="bottom", fontsize=8, color="#B71C1C", fontweight="bold")
+
+    # ── X 轴标签 + 分隔线 ────────────────────────────────────
+    ax1.set_xticks(xs + [x_total])
+    ax1.set_xticklabels(names + ["[total]"], rotation=40, ha="right", fontsize=8)
+    ax1.set_xlim(-0.6, n + 0.6)
+    ax1.axvline(x=n - 0.5, color="#AAAAAA", linestyle="--", linewidth=1, alpha=0.7)
+
+    ax1.legend(loc="upper left", fontsize=9)
+    ax1.set_title("Filter results: kept / removed  (last col = total, right axis)", fontsize=11)
+    plt.tight_layout()
+
+    out = stats_dir / "drop_ratio.png"
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+    print(f"[STATS] 图表已保存: {out}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="根据 issues.json 过滤原数据 JSON/JSONL，输出副本到指定目录"
@@ -337,7 +422,8 @@ def main(argv=None):
     parser.add_argument("--output", required=True,
                         help="过滤后副本的输出目录（不存在则自动创建）")
     parser.add_argument("--level", choices=["all", "error", "warn"], default="all",
-                        help="按日志级别过滤：all=ERROR+WARN 都剔除, error=仅剔除有ERROR的id, warn=仅剔除有WARN的id（默认 all）")
+                        help="按日志级别过滤：all=ERROR+WARN 都剔除, error=仅剔除有ERROR的id, "
+                             "warn=仅剔除有WARN的id（默认 all）")
     parser.add_argument("--json_dir", default=None,
                         help="与渲染时相同的 --json_dir，用于正确计算 source_file stem；"
                              "文件在子目录时必填")
@@ -355,6 +441,11 @@ def main(argv=None):
     parser.add_argument("--templates_file", default=None,
                         help="instruction 模板文件路径（每行一条，panguml user turn 随机采样；"
                              "不指定则 user turn 只含截图）")
+    # 统计与图表
+    parser.add_argument("--summary_json", default=None,
+                        help="将本次过滤统计写入 JSON 文件（供外层脚本汇总）")
+    parser.add_argument("--stats_dir", default=None,
+                        help="生成统计图表并保存到此目录（需要 matplotlib）")
     args = parser.parse_args(argv)
 
     json_dir = Path(args.json_dir) if args.json_dir else None
@@ -371,13 +462,12 @@ def main(argv=None):
         except Exception as e:
             print(f"[WARN] 无法读取 templates_file: {e}", file=sys.stderr)
 
-    print(f"[LOAD] issues: {args.issues}  level={args.level}")
     blocked_by_file = load_issues(args.issues, args.level)
     total_blocked_ids = sum(len(s) for s in blocked_by_file.values())
-    print(f"[INFO] 共 {len(blocked_by_file)} 个源文件，{total_blocked_ids} 个待剔除 id")
+    print(f"[LOAD] issues: {total_blocked_ids} 个待剔除 id  ({len(blocked_by_file)} 个 stem)  "
+          f"level={args.level}")
 
     input_files = collect_input_files(args.input)
-    print(f"[INFO] 输入文件数: {len(input_files)}")
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -394,9 +484,8 @@ def main(argv=None):
             templates=templates,
         )
 
-    total_original = 0
-    total_removed = 0
-    no_match_files = []
+    # (name, original, removed, had_blocked)
+    file_results: list[tuple[str, int, int, bool]] = []
 
     try:
         for src in input_files:
@@ -406,32 +495,72 @@ def main(argv=None):
                 src, out_dir, blocked, args.id_field,
                 panguml_writer=panguml_writer, stem=stem,
             )
-            total_original += original
-            total_removed += removed
+            had_blocked = bool(blocked)
+            file_results.append((src.name, original, removed, had_blocked))
 
-            if not blocked:
-                no_match_files.append(src.name)
-                status = "无需过滤"
+            if not had_blocked:
+                print(f"  {src.name:<45}  [直通]  {original} 条")
             else:
-                status = f"剔除 {removed}/{original}"
-            print(f"  {src.name:<40} {status}  (stem={stem})")
+                pct = round(removed / max(original, 1) * 100, 1)
+                kept = original - removed
+                print(f"  {src.name:<45}  剔除 {removed}/{original} ({pct}%)  保留 {kept}")
     finally:
         if panguml_writer is not None:
             panguml_writer.close()
 
+    # ── 分拆统计 ─────────────────────────────────────────────
+    filtered_results  = [(n, o, r) for n, o, r, hb in file_results if hb]
+    passthru_results  = [(n, o, r) for n, o, r, hb in file_results if not hb]
+
+    filt_original = sum(o for _, o, _ in filtered_results)
+    filt_removed  = sum(r for _, _, r in filtered_results)
+    filt_kept     = filt_original - filt_removed
+    pass_items    = sum(o for _, o, _ in passthru_results)
+
+    # ── SUMMARY ──────────────────────────────────────────────
+    pct_total = round(filt_removed / max(filt_original, 1) * 100, 1) if filt_original else 0.0
     print(f"\n[SUMMARY]")
-    print(f"  处理文件数    : {len(input_files)}")
-    print(f"  原始总条目数  : {total_original}")
-    print(f"  共剔除条目数  : {total_removed}")
-    print(f"  保留条目数    : {total_original - total_removed}")
-    if no_match_files:
-        print(f"  无对应 issue 的文件数: {len(no_match_files)}")
+    if filtered_results:
+        names_str = ", ".join(n for n, _, _ in filtered_results)
+        print(f"  过滤文件      : {len(filtered_results)} 个  ({names_str})")
+    else:
+        print(f"  过滤文件      : 0 个")
+    print(f"  原始条目数    : {filt_original}")
+    print(f"  剔除条目数    : {filt_removed} ({pct_total}%)")
+    print(f"  保留条目数    : {filt_kept}")
+    if passthru_results:
+        pass_names = ", ".join(n for n, _, _ in passthru_results[:3])
+        if len(passthru_results) > 3:
+            pass_names += f" 等 {len(passthru_results)} 个"
+        print(f"  直通文件      : {len(passthru_results)} 个  {pass_items} 条  ({pass_names})")
     print(f"  输出目录      : {out_dir.resolve()}")
     if panguml_writer is not None:
         print(f"  panguml 输出  : {Path(args.export_panguml).resolve()}")
-        print(f"  panguml 写入  : {panguml_writer.written} 条"
-              + (f"  跳过: {panguml_writer.skipped} 条（PNG 不存在或 HTML 为空）"
-                 if panguml_writer.skipped else ""))
+        skipped_note = (f"  跳过: {panguml_writer.skipped} 条（PNG 不存在或 HTML 为空）"
+                        if panguml_writer.skipped else "")
+        print(f"  panguml 写入  : {panguml_writer.written} 条{skipped_note}")
+
+    # ── 写出机器可读汇总（含 per-file 明细，供外层聚合成全局图表）──────
+    if args.summary_json:
+        summary_data = {
+            "files": [
+                {"name": n, "original": o, "removed": r, "had_blocked": hb}
+                for n, o, r, hb in file_results
+            ],
+            "original":          filt_original,
+            "removed":           filt_removed,
+            "kept":              filt_kept,
+            "passthrough_items": pass_items,
+            "panguml_written":   panguml_writer.written if panguml_writer else 0,
+            "panguml_skipped":   panguml_writer.skipped if panguml_writer else 0,
+        }
+        Path(args.summary_json).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.summary_json, "w", encoding="utf-8") as f:
+            json.dump(summary_data, f, ensure_ascii=False)
+
+    # ── 单独调用时（不经 run.sh）生成本次子集的图表 ────────────────
+    if args.stats_dir:
+        _generate_filter_charts(file_results, Path(args.stats_dir))
 
 
 if __name__ == "__main__":
