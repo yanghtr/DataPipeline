@@ -1,0 +1,50 @@
+Generate HTML code for this image.
+Create HTML code for the input image.
+Write HTML code for the provided image.
+Produce HTML code for this image.
+Provide HTML code for the input image.
+Return HTML code for the provided image.
+Generate code in HTML for this image.
+Create code in HTML for the input image.
+Write code in HTML for the provided image.
+Produce code in HTML for this image.
+Generate HTML code that recreates this image.
+Create HTML code that recreates the input image.
+Write HTML code that recreates the provided image.
+Produce HTML code that recreates this image.
+Generate HTML code for recreating this image.
+Create HTML code for recreating the input image.
+Produce HTML code for recreating the provided image.
+Convert this image to HTML code.
+Convert the input image to HTML code.
+Convert the provided image to HTML code.
+Recreate this image using HTML code.
+Recreate the input image using HTML code.
+Recreate the provided image using HTML code.
+Reconstruct this image as HTML code.
+Reconstruct the input image as HTML code.
+Generate HTML code based on this image.
+Create HTML code based on the input image.
+Produce HTML code based on the provided image.
+Generate HTML code from this image.
+Create HTML code from the input image.
+Produce HTML code from the provided image.
+Generate HTML code corresponding to this image.
+Create HTML code corresponding to the input image.
+Write HTML code corresponding to the provided image.
+Generate HTML and CSS code for this image.
+Generate HTML code that closely matches this image.
+Create HTML code that closely matches the input image.
+Produce HTML code that closely matches the provided image.
+Generate HTML code that accurately reflects this image.
+Create HTML code that accurately reflects the input image.
+Produce HTML code that accurately reflects the provided image.
+Recreate this image in HTML as closely as possible.
+Recreate the input image in HTML as closely as possible.
+Recreate the provided image in HTML as closely as possible.
+Generate HTML code that accurately captures the visual appearance of this image.
+Generate HTML code that preserves the visible content, layout, colors, and styling of this image.
+Create HTML code that preserves the visible content, layout, colors, and styling of the input image.
+Produce HTML code that preserves the visible content, layout, colors, and styling of the provided image.
+Generate HTML code that preserves the spacing, typography, and visual hierarchy of this image.
+Create HTML and CSS code that preserves the overall structure, spacing, and visual style of the input image.
