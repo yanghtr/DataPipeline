@@ -1,0 +1,79 @@
+# ── API ─────────────────────────────────────────────────────────────────────
+# Fallback URL for the old single-endpoint mode. When backend_urls_from_nginx_conf
+# is set below, Stage 2 will call the parsed backends directly instead of this URL.
+url: "http://127.0.0.1:16669/v1/chat/completions"
+api_key: "your-api-key-here"
+model: "qwen3.6-27b"
+
+timeout: 600.0
+max_retries: 3
+ssl_verify: false
+log_user: "html_rewrite_modelarts_dp64"
+
+# Direct-client DP mode:
+# Read the existing worker-0 nginx upstream file, extract all `server ip:port;`
+# entries, and call those vLLM instances directly.
+backend_urls_from_nginx_conf: "/etc/nginx/conf.d/vllm.conf"
+backend_url_path: "/v1/chat/completions"
+
+# Total Stage 2 concurrency = number_of_backends * num_workers_per_backend.
+# For the current 16-node, TP=2 service this is 64 backends:
+#   4  -> 256 total workers
+#   8  -> 512 total workers
+#   16 -> 1024 total workers
+num_workers_per_backend: 4
+
+# Stage 1 still uses num_workers. In Stage 2 DP mode, total API concurrency is
+# controlled by num_workers_per_backend above.
+num_workers: 32
+
+# ── Paths ───────────────────────────────────────────────────────────────────
+# Adjust these paths if the ModelArts training job mounts data elsewhere.
+input_dir: "/data/yanghaitao/Data/Code/FineWebEdu/raw/20260324/"
+input_filename_template: "part2026-03-23-{index:05d}.jsonl"
+input_start_index: 0
+input_end_index_exclusive: 20
+run_root_dir: "/data/yanghaitao/Data/Code/FineWebEdu/run/20260324_0_20_modelarts_dp64/"
+output_shard_name_template: "part2026-03-23-{index:05d}"
+
+# Legacy single-file output paths are used only when run_root_dir is empty.
+# preprocessed_path: "/data/yanghaitao/Data/Code/FineWebEdu/html_rewrite/preprocessed.jsonl"
+# output_path: "/data/yanghaitao/Data/Code/FineWebEdu/html_rewrite/output_kept.jsonl"
+# reject_log_path: "/data/yanghaitao/Data/Code/FineWebEdu/html_rewrite/output_rejected.jsonl"
+# call_log_path: "outputs/html_rewrite/html_rewrite_api_calls.jsonl"
+# stats_log_path: "outputs/html_rewrite/html_rewrite_stats.jsonl"
+# summary_log_path: "outputs/html_rewrite/html_rewrite_summary.json"
+# stats_plot_dir: "outputs/html_rewrite/html_rewrite_plots"
+stats_hist_bins: 120
+
+# ── Preprocess thresholds ───────────────────────────────────────────────────
+inline_script_max_chars: 4096
+json_payload_max_chars: 4096
+hidden_input_max_chars: 4096
+html_comment_max_chars: 1024
+inline_style_max_chars: 32768
+min_preprocessed_chars: 1024
+max_preprocessed_chars: 65536
+fetch_media_size: true
+enable_language_filter: true
+allowed_languages: ["en"]
+language_detector: "langid"
+language_min_visible_text_chars: 200
+language_min_letter_chars: 100
+language_sample_max_chars: 12000
+language_min_latin_ratio: 0.6
+language_min_detector_margin: 3.0
+
+# ── Generation params ───────────────────────────────────────────────────────
+generation_params:
+  temperature: 0.6
+  top_p: 0.95
+  presence_penalty: 0.0
+  max_tokens: 32768
+  top_k: 20
+
+# ── Prompt ──────────────────────────────────────────────────────────────────
+prompt_module: "html_rewrite"
+
+# ── Runtime ─────────────────────────────────────────────────────────────────
+resume: true

@@ -10,6 +10,7 @@ Stage 2：批量模型改写引擎。
 from __future__ import annotations
 
 import importlib
+import itertools
 import json
 import re
 import threading
@@ -30,6 +31,7 @@ from .run_layout import (
 
 # 提取模型输出中的 HTML（```html ... ``` 代码块或裸 HTML）
 _HTML_BLOCK_RE = re.compile(r"```(?:html)?\s*(<!DOCTYPE.*?</html>)\s*```", re.DOTALL | re.IGNORECASE)
+_NGINX_SERVER_RE = re.compile(r"^\s*server\s+([A-Za-z0-9_.-]+:\d+)(?:\s+[^;]*)?;", re.MULTILINE)
 
 
 def _load_prompt_module(name: str) -> ModuleType:
@@ -63,6 +65,40 @@ def _extract_reasoning(message: dict) -> str | None:
     if reasoning_content:
         return reasoning_content
     return None
+
+
+def _resolve_api_urls(cfg: HtmlRewriteConfig) -> list[str]:
+    if cfg.backend_urls and cfg.backend_urls_from_nginx_conf:
+        raise ValueError("Use either `backend_urls` or `backend_urls_from_nginx_conf`, not both.")
+
+    if cfg.backend_urls:
+        return list(dict.fromkeys(cfg.backend_urls))
+
+    if cfg.backend_urls_from_nginx_conf:
+        conf_path = Path(cfg.backend_urls_from_nginx_conf)
+        text = conf_path.read_text(encoding="utf-8")
+        path = cfg.backend_url_path or "/v1/chat/completions"
+        if not path.startswith("/"):
+            path = "/" + path
+
+        urls: list[str] = []
+        for target in _NGINX_SERVER_RE.findall(text):
+            urls.append(f"http://{target}{path}")
+
+        urls = list(dict.fromkeys(urls))
+        if not urls:
+            raise ValueError(f"No vLLM backend `server host:port;` entries found in {conf_path}")
+        return urls
+
+    return [cfg.url]
+
+
+def _effective_num_workers(cfg: HtmlRewriteConfig, api_url_count: int) -> int:
+    if cfg.num_workers_per_backend is not None:
+        if cfg.num_workers_per_backend <= 0:
+            raise ValueError("`num_workers_per_backend` must be positive when set.")
+        return api_url_count * cfg.num_workers_per_backend
+    return cfg.num_workers
 
 
 def run_rewrite(cfg: HtmlRewriteConfig, limit: int | None = None) -> None:
@@ -162,9 +198,19 @@ def _run_rewrite_records(
 
     done_ids = set(existing.keys())
     indexed_todo = [(i, rec) for i, rec in enumerate(records) if not _rewrite_record_is_done(rec, done_ids)]
+    api_urls = _resolve_api_urls(cfg)
+    effective_workers = _effective_num_workers(cfg, len(api_urls))
+    url_cycle = itertools.cycle(api_urls)
+    url_lock = threading.Lock()
+    url_semaphores = (
+        {api_url: threading.Semaphore(cfg.num_workers_per_backend) for api_url in api_urls}
+        if cfg.num_workers_per_backend is not None
+        else {}
+    )
 
     logger.info(
-        f"[rewrite] 待处理 {len(indexed_todo):,} 条，workers={cfg.num_workers}，输出={output_path}，来源={source_label}"
+        f"[rewrite] 待处理 {len(indexed_todo):,} 条，workers={effective_workers}，"
+        f"api_backends={len(api_urls)}，输出={output_path}，来源={source_label}"
     )
 
     # ── 3. 并行调用模型，成功结果直接追加到最终 output.jsonl ─────────────────
@@ -176,26 +222,39 @@ def _run_rewrite_records(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     call_log_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def next_api_url() -> str:
+        with url_lock:
+            return next(url_cycle)
+
+    def call_one_backend(api_url: str, user_content: list[dict]) -> dict:
+        return call_chat_completion(
+            url=api_url,
+            api_key=cfg.api_key,
+            model=cfg.model,
+            user_content=user_content,
+            system=system_prompt,
+            timeout=cfg.timeout,
+            max_retries=cfg.max_retries,
+            ssl_verify=cfg.ssl_verify,
+            log_user=cfg.log_user,
+            result_log_path=call_log_path,
+            extra_params=cfg.generation_params or None,
+        )
+
     def process_one(orig_idx: int, rec: dict) -> None:
         nonlocal ok_count, err_count
         rec_id = rec.get("id", "")
         preprocessed_html = rec.get("preprocessed_html", "")
+        api_url = next_api_url()
 
         try:
             user_content = build_user_content(preprocessed_html)
-            resp_data = call_chat_completion(
-                url=cfg.url,
-                api_key=cfg.api_key,
-                model=cfg.model,
-                user_content=user_content,
-                system=system_prompt,
-                timeout=cfg.timeout,
-                max_retries=cfg.max_retries,
-                ssl_verify=cfg.ssl_verify,
-                log_user=cfg.log_user,
-                result_log_path=call_log_path,
-                extra_params=cfg.generation_params or None,
-            )
+            semaphore = url_semaphores.get(api_url)
+            if semaphore is None:
+                resp_data = call_one_backend(api_url, user_content)
+            else:
+                with semaphore:
+                    resp_data = call_one_backend(api_url, user_content)
             message: dict = resp_data["choices"][0]["message"]
             response_text = message.get("content", "") or ""
             reasoning_text = _extract_reasoning(message)
@@ -234,7 +293,7 @@ def _run_rewrite_records(
             logger.info(f"[rewrite] 进度 {total:,}/{len(indexed_todo):,}  ok={ok_count:,}  error={err_count:,}")
 
     if indexed_todo:
-        with ThreadPoolExecutor(max_workers=cfg.num_workers) as exe:
+        with ThreadPoolExecutor(max_workers=effective_workers) as exe:
             futures = [exe.submit(process_one, idx, rec) for idx, rec in indexed_todo]
             for fut in as_completed(futures):
                 try:

@@ -20,6 +20,10 @@ class HtmlRewriteConfig:
     max_retries: int = 3
     ssl_verify: bool = True
     log_user: str = "html_rewrite"
+    backend_urls: list[str] = field(default_factory=list)
+    backend_urls_from_nginx_conf: str = ""
+    backend_url_path: str = "/v1/chat/completions"
+    num_workers_per_backend: int | None = None
 
     # ── 路径 ─────────────────────────────────────────────────────────────────
     input_path: str = ""                                    # 原始 JSONL（Stage 1 输入）
