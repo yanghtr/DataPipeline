@@ -2,7 +2,8 @@
 utils.renderers — 可复用的沙箱渲染工具集
 
 当前支持：
-  - SVG → PNG  (utils.renderers.svg)
+  - SVG → PNG  via CairoSVG   (utils.renderers.svg)
+  - SVG → PNG  via Playwright (utils.renderers.svg_playwright)
 
 后续可扩展：
   - HTML → PNG  (utils.renderers.html)
@@ -17,6 +18,7 @@ utils.renderers — 可复用的沙箱渲染工具集
 
 from .base import RenderResult, check_all_white, read_image_size
 from .svg import get_svg_dimensions, render_svg
+from .svg_playwright import render_svg_playwright
 
 __all__ = [
     "RenderResult",
@@ -24,4 +26,5 @@ __all__ = [
     "check_all_white",
     "get_svg_dimensions",
     "render_svg",
+    "render_svg_playwright",
 ]

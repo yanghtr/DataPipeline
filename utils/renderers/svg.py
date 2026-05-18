@@ -67,14 +67,9 @@ def render_svg(
     height: int = 0,
     background_color: tuple[int, int, int] = (255, 255, 255),
     timeout: int = 60,
+    backend: str = "cairosvg",
 ) -> RenderResult:
     """将 SVG 代码渲染为 PNG 并保存到 output_path。
-
-    渲染流程：
-      1. CairoSVG 将 SVG 光栅化为 RGBA PNG（内存）
-      2. 创建纯色背景图（默认白色）
-      3. 将 RGBA 图按 alpha 通道合成到背景上
-      4. 保存为 RGB PNG 文件
 
     Args:
         svg_code         : SVG 源代码字符串
@@ -82,11 +77,22 @@ def render_svg(
         width            : 渲染目标宽度（像素）；0 表示使用 SVG 自身尺寸
         height           : 渲染目标高度（像素）；0 表示使用 SVG 自身尺寸
         background_color : RGB 背景颜色，默认纯白 (255, 255, 255)
-        timeout          : cairosvg 渲染超时秒数；0 表示不限时（仅 Linux/macOS 有效）
+        timeout          : 渲染超时；cairosvg 单位为秒，playwright 单位为秒（内部转 ms）
+        backend          : "cairosvg"（默认）或 "playwright"
 
     Returns:
         RenderResult — 包含 success、实际 width/height、error 信息
     """
+    if backend == "playwright":
+        from .svg_playwright import render_svg_playwright
+        return render_svg_playwright(
+            svg_code=svg_code,
+            output_path=output_path,
+            width=width,
+            height=height,
+            background_color=background_color,
+            timeout=timeout,
+        )
     try:
         import cairosvg  # 延迟导入，便于在 worker 子进程中使用
     except ImportError as e:
