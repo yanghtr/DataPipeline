@@ -49,8 +49,14 @@ def _render_one(idx: int, line: str, outdir: str, backend: str, timeout: int, to
         logger.warning(f"[{idx:>6}] 未找到 SVG，跳过")
         return "skip"
 
+    try:
+        rel_path: str = item["data"][0]["content"][0]["image"]["relative_path"]
+    except (KeyError, IndexError, TypeError):
+        rel_path = f"{idx:09d}.png"
+
     w, h = get_svg_dimensions(svg_code)
-    out_path = os.path.join(outdir, f"{idx:09d}.png")
+    out_path = os.path.join(outdir, rel_path)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     result = render_svg(
         svg_code,
         out_path,
