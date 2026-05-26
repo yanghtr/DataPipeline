@@ -1,0 +1,45 @@
+input:
+  image_root: /path/to/images
+  jsonl_files:
+    - /path/to/data_000000.jsonl
+    # - /path/to/data_000001.jsonl
+
+output:
+  output_dir: ./outputs/cot
+  debug_dir: ./outputs/cot_debug   # null 则不输出 debug
+
+# VLM API 配置，字段与 html_rewrite 流水线对齐
+vlm:
+  url: http://localhost:8000/v1/chat/completions   # 完整 endpoint
+  api_key: token
+  model: your-model-name
+  max_retries: 3
+  timeout: 120.0
+  ssl_verify: false
+  log_user: html_rewrite_cot
+  generation_params:
+    temperature: 0.7
+    top_p: 0.9
+    max_tokens: 2048
+    # stop: ["```html"]
+    # 说明：只用 "```html" 作为 stop token。
+    # 不要加 "<html" 或 "<!DOCTYPE html>"——它们会在模型分析 HTML 标签时误截断。
+    # 如果 API 不支持 stop 参数，删除此字段即可，call_chat_completion 会忽略多余字段。
+
+runtime:
+  num_workers: 4
+  playwright_concurrency: 2
+  resume: true
+  run_dir: ./run
+
+render:
+  viewport_strategy: match_image   # match_image | user_config | fallback
+  viewport_width: null
+  viewport_height: null
+  fallback_width: 1280
+  fallback_height: 900
+  content_timeout_ms: 10000
+  js_timeout_ms: 5000
+  block_external: true
+
+max_input_chars: 262144   # ~64K tokens；超出则跳过并记录 warning
