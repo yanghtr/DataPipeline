@@ -47,18 +47,27 @@ def _process_one(
     sample_id = record.sample_id
     t0 = time.monotonic()
 
-    # 跳过 Phase 1 失败的样本
-    if record.extraction_status == "failed":
-        logger.warning(f"[phase2] {sample_id}: skipped (phase1 failed)")
+    # 只处理 phase1 完全成功的样本，确保 CoT 数据质量
+    if record.extraction_status != "ok":
+        if record.extraction_timeout:
+            reason = "phase1 playwright timeout"
+            stats_key = "skipped_timeout"
+        elif record.extraction_status == "failed":
+            reason = "phase1 failed"
+            stats_key = "skipped_failed"
+        else:
+            reason = f"phase1 status={record.extraction_status}"
+            stats_key = "skipped_other"
+        logger.warning(f"[phase2] {sample_id}: skipped ({reason})")
         with stats_lock:
-            stats["skipped"] += 1
+            stats[stats_key] += 1
         return
 
     # outline 未完成（不应发生，防御性检查）
     if record.outline_text is None or record.html_outline_json is None:
         logger.warning(f"[phase2] {sample_id}: skipped (no outline)")
         with stats_lock:
-            stats["skipped"] += 1
+            stats["skipped_other"] += 1
         return
 
     # 构造图片完整路径
@@ -188,7 +197,10 @@ def run_phase2(
     call_log_path = str(run_dir / "vlm_calls.jsonl")
 
     write_lock = threading.Lock()
-    stats: dict[str, int] = {"ok": 0, "warning": 0, "failed": 0, "skipped": 0}
+    stats: dict[str, int] = {
+        "ok": 0, "warning": 0, "failed": 0,
+        "skipped_timeout": 0, "skipped_failed": 0, "skipped_other": 0,
+    }
     stats_lock = threading.Lock()
 
     with ThreadPoolExecutor(max_workers=config.runtime.num_workers) as executor:
@@ -216,10 +228,11 @@ def run_phase2(
                     s = dict(stats)
                 logger.info(
                     f"[phase2] 进度 {completed}/{total} | "
-                    f"ok={s['ok']} warn={s['warning']} fail={s['failed']} skip={s['skipped']}"
+                    f"ok={s['ok']} warn={s['warning']} fail={s['failed']} "
+                    f"skip(timeout={s['skipped_timeout']} failed={s['skipped_failed']} other={s['skipped_other']})"
                 )
 
     logger.info(
-        f"[phase2] 完成：ok={stats['ok']} warning={stats['warning']} "
-        f"failed={stats['failed']} skipped={stats['skipped']}"
+        f"[phase2] 完成：ok={stats['ok']} warning={stats['warning']} failed={stats['failed']} | "
+        f"跳过：phase1_timeout={stats['skipped_timeout']} phase1_failed={stats['skipped_failed']} other={stats['skipped_other']}"
     )

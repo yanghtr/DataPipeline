@@ -36,7 +36,6 @@ class RuntimeConfig:
     num_workers: int = 4
     playwright_concurrency: int = 2
     resume: bool = True
-    retry_on_timeout: bool = False  # resume=True 时，是否重跑 extraction_timeout=True 的样本
     run_dir: str = "./run"
 
 

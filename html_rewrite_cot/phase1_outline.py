@@ -119,12 +119,7 @@ def run_phase1(
     to_process: list[SampleRecord] = []
     for r in all_records:
         if r.sample_id in cached:
-            cached_data = cached[r.sample_id]
-            # retry_timeout=True 时，让 timeout 样本重新入队
-            if config.runtime.retry_on_timeout and cached_data.get("extraction_timeout", False):
-                to_process.append(r)
-            else:
-                r.apply_outline_cache(cached_data)
+            r.apply_outline_cache(cached[r.sample_id])
         else:
             to_process.append(r)
 

@@ -35,7 +35,8 @@ def _load_all_records(config: PipelineConfig) -> list[SampleRecord]:
 
 
 def _print_summary(all_records: list[SampleRecord], elapsed: float) -> None:
-    p1_ok = sum(1 for r in all_records if r.extraction_status in ("ok", "warning"))
+    p1_ok = sum(1 for r in all_records if r.extraction_status == "ok")
+    p1_timeout = sum(1 for r in all_records if r.extraction_timeout)
     p1_fail = sum(1 for r in all_records if r.extraction_status == "failed")
     p2_ok = sum(1 for r in all_records if r.generation_status in ("ok", "warning"))
     p2_fail = sum(1 for r in all_records if r.generation_status == "failed")
@@ -64,12 +65,10 @@ def _print_summary(all_records: list[SampleRecord], elapsed: float) -> None:
         1 for r in all_records
         if r.quality_metadata and r.quality_metadata.get("contains_html_in_reasoning")
     )
-    timeouts = sum(1 for r in all_records if r.extraction_timeout)
-
     summary = {
         "total": len(all_records),
         "elapsed_s": round(elapsed, 1),
-        "phase1": {"ok_or_warning": p1_ok, "failed": p1_fail, "playwright_timeout": timeouts},
+        "phase1": {"ok": p1_ok, "playwright_timeout": p1_timeout, "failed": p1_fail},
         "phase2": {"ok_or_warning": p2_ok, "failed": p2_fail, "skipped": p2_skip},
         "quality": {
             "avg_reasoning_words": round(avg_words, 1),

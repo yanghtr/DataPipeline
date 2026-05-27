@@ -30,7 +30,6 @@ runtime:
   num_workers: 4
   playwright_concurrency: 2
   resume: true          # true：跳过已缓存样本，支持 kill 后续跑；false：全量重跑
-  retry_on_timeout: false  # true：resume 时重跑 playwright timeout 的样本（缺少颜色/布局信息）
   run_dir: ./outputs/html_rewrite_cot/run
 
 render:
