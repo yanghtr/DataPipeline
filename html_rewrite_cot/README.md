@@ -57,6 +57,15 @@ python -m html_rewrite_cot.main --config my_config.yaml --no-resume
 - 输出：reasoning_text（后处理）→ final_answer
 - 结果写入 panguml 输出文件 + debug 文件
 
+**Reasoning 结构（固定 6 段）**
+
+1. 任务引导句
+2. Layout Analysis：整体布局从上到下
+3. 各区域段落（Header / Navigation / Main Content / Sidebar / Footer 等）— 包含图片/媒体区域描述
+4. Colors Observed：主色调 + 色值
+5. Structure and Implementation Plan：HTML/CSS 实现方案
+6. 过渡句（自然引出 HTML 代码块）
+
 ---
 
 ## 配置说明
@@ -95,6 +104,20 @@ render:
 只使用 ` ```html ` 作为 stop token。
 
 不使用 `<html` 或 `<!DOCTYPE html>`：这类 stop 会在模型 reasoning 中分析 HTML 标签时（如 "The `<html>` element has lang='en'"）误截断，对后续构造慢思考或 HTML 分析数据有破坏性。
+
+### 图片/媒体区域描述策略（泛化设计）
+
+训练数据中所有图片均为 LLM 改写后的 placeholder（单色方块 + 虚线边框），而未来推理时模型将面对真实网站截图（含真实照片、banner、icon）。
+
+为使模型能从 placeholder 训练数据泛化到真实图片，prompt 要求模型用**布局语言**描述媒体区域，而非描述 placeholder 的外观特征：
+
+| 不应出现（placeholder 特有，不可泛化） | 应使用（布局语言，可泛化） |
+|---|---|
+| "a gray box with dashed border" | "a full-width 16:9 hero banner" |
+| "light green placeholder background" | "an 80×80px square avatar" |
+| "Image Placeholder text overlay" | "a 4:3 product thumbnail in a card" |
+
+无论截图显示的是真实照片还是 placeholder，模型都按同一套描述框架处理：**视觉角色 + 相对尺寸 + 宽高比**。具体实现方式（`<img>`、CSS `background-image` 容器、`<svg>`、placeholder div 等）由模型根据实际 HTML 结构自行判断，prompt 不预设答案。
 
 ---
 

@@ -492,8 +492,9 @@ def _parse_rendered(data: dict, viewport_w: int, viewport_h: int) -> dict:
             col_count = len(grid_cols.split())
             layout_hints.append(f"{sel}: grid layout ({col_count} col-tracks)")
 
-        # Style hints
-        if w >= viewport_w * 0.85 and 0 < h < 120:
+        # Style hints — exclude pure text/heading tags which are full-width by default
+        _TEXT_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "span", "a", "label", "strong", "em"}
+        if w >= viewport_w * 0.85 and 0 < h < 120 and tag not in _TEXT_TAGS:
             style_hints.append(f"{sel}: full-width bar (likely nav/header)")
         br = el.get("borderRadius")
         border = el.get("border")

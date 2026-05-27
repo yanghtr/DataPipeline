@@ -20,6 +20,16 @@ Use a structured visual implementation analysis style. Explain the page layout, 
 regions, important components, colors, visual style, assets, and CSS implementation choices \
 needed to recreate the page as a self-contained HTML file with embedded CSS.
 
+Visual media regions: For any region in the screenshot that carries image or media content \
+— whether it appears as a real photograph, an illustration, a logo, a banner, or a \
+placeholder box — describe it using layout-relevant properties: its visual role in the page \
+hierarchy, approximate size relative to surrounding elements, and aspect ratio. \
+Do not describe placeholder-specific styling (dashed borders, gray fills, overlay text \
+labels); these are training-data artifacts that do not appear in real screenshots. \
+In the implementation plan, choose and explain the appropriate technique for each such \
+region based on the actual HTML structure — the correct choice may be an <img> element, \
+a CSS background-image container, a video embed, an SVG, or a styled placeholder div.
+
 Do not output HTML or CSS code.\
 """
 
@@ -51,6 +61,15 @@ Main Content Area, Sidebar, Summary/Card Section, Forms and Tables, Footer Secti
 Assets and Visual Blocks when they fit the page.
    Do not force a section that is not present.
 
+   For each image or media region visible in the screenshot — including hero banners, \
+logos, product thumbnails, avatars, inline illustrations, and decorative images — describe:
+   (a) its visual role in the layout (e.g., "full-width hero banner at the top of the \
+main column", "square 80px avatar left of the heading", "4:3 thumbnail in a card grid"),
+   (b) its approximate size relative to the containing section, and
+   (c) its aspect ratio, since this determines the CSS sizing approach.
+   Describe what the region IS and WHERE it sits — not how the placeholder box looks. \
+This description applies equally when the screenshot shows a real photo or a placeholder.
+
 4. Include a "Colors Observed:" section.
    Summarize dominant colors and approximate color roles. Use approximate hex values only \
 when helpful.
@@ -60,6 +79,8 @@ when helpful.
 multi-column layout, cards, forms, tables, image placeholders, CSS-drawn blocks, and \
 centered containers when relevant.
    If a layout relationship is ambiguous, briefly state the final implementation choice.
+   For each visual media region identified in your analysis, state the chosen \
+implementation technique and how its dimensions or aspect ratio will be maintained.
 
 6. After the "Structure and Implementation Plan:" section, close with a single natural \
 transition sentence that bridges your analysis to the HTML output. Examples (vary the wording):

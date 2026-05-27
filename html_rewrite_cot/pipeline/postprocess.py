@@ -62,6 +62,8 @@ def check_quality(reasoning_text: str, raw_html: str) -> dict:
     region_sections: set[str] = set()
     for line in reasoning_text.splitlines():
         stripped = line.strip()
+        # Strip markdown bold markers so "**Header Section:**" is treated same as "Header Section:"
+        stripped = re.sub(r"^\*+\s*|\s*\*+$", "", stripped)
         if stripped.endswith(":") and 3 < len(stripped) <= 60:
             key = stripped[:-1].lower()
             if key not in _FIXED_SECTIONS:
@@ -76,7 +78,8 @@ def check_quality(reasoning_text: str, raw_html: str) -> dict:
         ("form", ["form", "input", "textarea", "select"]),
         ("sidebar", ["aside", "sidebar", "panel"]),
         ("footer", ["footer", "foot"]),
-        ("table", ["<table", "<tr", "<th"]),
+        # "table" omitted: reasoning often mentions "table" in a negative sense
+        # ("no table used", "avoid table layout") → always false-positives.
         # "image" omitted: reasoning always says "analyze the image" (screenshot),
         # regardless of whether the HTML contains <img> — always false-positives.
     ]
