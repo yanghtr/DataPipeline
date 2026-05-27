@@ -134,6 +134,17 @@ def run_phase2(
     for r in all_records:
         by_file[r.jsonl_file].append(r)
 
+    # no-resume：清空输出文件，使重跑结果不叠加
+    if not config.runtime.resume:
+        for jsonl_file in by_file:
+            out_path, dbg_path = _make_output_paths(config, jsonl_file)
+            for p in (out_path, dbg_path):
+                if p and p.exists():
+                    p.write_text("")
+                    logger.debug(f"[phase2] cleared {p} for full rerun")
+        if done_path.exists():
+            done_path.write_text("")
+
     # Resume：读取已完成 sample_id
     done_ids: set[str] = set()
     if config.runtime.resume:

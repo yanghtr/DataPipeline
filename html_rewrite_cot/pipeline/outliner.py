@@ -357,7 +357,7 @@ def _static_extract(html: str) -> dict:
 _PLAYWRIGHT_JS = """
 () => {
     const SEMANTIC_SEL = 'body,header,nav,main,article,aside,section,footer,form,table,thead,tbody,tr,th,td,ul,ol,li,h1,h2,h3,h4,h5,h6,button,input,textarea,select,label,img,picture,svg,a';
-    const STRUCT_RE = /container|wrapper|layout|grid|row|col|sidebar|hero|banner|card|panel|nav|header|footer|main|content|column|block|section/i;
+    const STRUCT_RE = /container|wrapper|layout|grid|row|col|sidebar|hero|banner|card|panel|nav|header|footer|main|content|column|block|section|logo|placeholder|media/i;
 
     function rgb2hex(v) {
         const m = v && v.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
@@ -379,7 +379,7 @@ _PLAYWRIGHT_JS = """
         const hasBg = !isClear(s.backgroundColor);
         const hasBgImg = s.backgroundImage && s.backgroundImage !== 'none';
         const hasBorder = s.border && s.borderStyle !== 'none' && !s.border.startsWith('0px');
-        const isVB = r.width*r.height > 400 && txt.length < 15 && (hasBg || hasBgImg || hasBorder);
+        const isVB = r.width*r.height > 400 && txt.length < 50 && (hasBg || hasBgImg || hasBorder);
         return {
             sel: getSel(el),
             tag: el.tagName.toLowerCase(),
@@ -493,7 +493,7 @@ def _parse_rendered(data: dict, viewport_w: int, viewport_h: int) -> dict:
             layout_hints.append(f"{sel}: grid layout ({col_count} col-tracks)")
 
         # Style hints — exclude pure text/heading tags which are full-width by default
-        _TEXT_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "span", "a", "label", "strong", "em"}
+        _TEXT_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "ol", "span", "a", "label", "strong", "em"}
         if w >= viewport_w * 0.85 and 0 < h < 120 and tag not in _TEXT_TAGS:
             style_hints.append(f"{sel}: full-width bar (likely nav/header)")
         br = el.get("borderRadius")

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+from bs4 import BeautifulSoup
 
 from utils.api_client import call_chat_completion, image_text_content
 from html_rewrite_cot.config import VLMConfig
@@ -22,11 +25,21 @@ needed to recreate the page as a self-contained HTML file with embedded CSS.
 
 Visual media regions: For any region in the screenshot that carries image or media content \
 — whether it appears as a real photograph, an illustration, a logo, a banner, or a \
-placeholder box — describe it using layout-relevant properties: its visual role in the page \
-hierarchy, approximate size relative to surrounding elements, and aspect ratio. \
-Do not describe placeholder-specific styling (dashed borders, gray fills, overlay text \
-labels); these are training-data artifacts that do not appear in real screenshots. \
-In the implementation plan, choose and explain the appropriate technique for each such \
+placeholder box — describe it using layout-relevant properties only: its visual role in \
+the page hierarchy (e.g. "brand logo", "hero banner", "sidebar ad slot"), its approximate \
+size relative to surrounding elements, and its aspect ratio. These three attributes \
+describe the region equally well for a real screenshot or a placeholder.
+
+Strictly forbidden — do not write any of the following:
+- Fill/background color of a placeholder (e.g. "light gray background", "gray fill", \
+"#e9ecef background")
+- Border style of a placeholder ("dashed border", "dotted outline")
+- Text labels found inside placeholder elements (e.g. "IpLiveCams — Logo", \
+"Sidebar area (ads / widgets removed)", "Image Placeholder", filename labels)
+- Phrases that reveal training-data construction ("placeholder box", "styled placeholder \
+div", "ads removed", "widgets removed", "placeholder text")
+
+In the implementation plan, choose and explain the appropriate technique for each media \
 region based on the actual HTML structure — the correct choice may be an <img> element, \
 a CSS background-image container, a video embed, an SVG, or a styled placeholder div.
 
@@ -67,8 +80,14 @@ logos, product thumbnails, avatars, inline illustrations, and decorative images 
 main column", "square 80px avatar left of the heading", "4:3 thumbnail in a card grid"),
    (b) its approximate size relative to the containing section, and
    (c) its aspect ratio, since this determines the CSS sizing approach.
-   Describe what the region IS and WHERE it sits — not how the placeholder box looks. \
-This description applies equally when the screenshot shows a real photo or a placeholder.
+   Describe what the region IS and WHERE it sits — not how the placeholder box looks.
+   The outline marks certain elements as "[placeholder — describe by visual role, size, \
+and aspect ratio only]". Treat these exactly like real images: use only (a)(b)(c) above.
+
+   Good example: "A 240×40px brand logo at roughly 6:1 aspect ratio, positioned at the \
+top of the sidebar."
+   Bad example: "A light gray (#e9ecef) rectangle with a dashed border labeled \
+'IpLiveCams — Logo'." — Do not write descriptions like this.
 
 4. Include a "Colors Observed:" section.
    Summarize dominant colors and approximate color roles. Use approximate hex values only \
@@ -106,6 +125,46 @@ Original target HTML:
 """
 
 
+# ── HTML 预处理 ───────────────────────────────────────────────────────────────
+
+_PLACEHOLDER_CLASS_RE = re.compile(r"\bplaceholder\b", re.IGNORECASE)
+
+# Strips bg/border from CSS rules like ".logo-placeholder { background: ...; border: ... }"
+_PLACEHOLDER_CSS_RULE_RE = re.compile(
+    r"(\.[a-zA-Z0-9_-]*placeholder[a-zA-Z0-9_-]*\s*\{)([^}]+)(\})",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_PROP_RE = re.compile(
+    r"\b(?:background(?:-color)?|border(?:-color|-style|-width)?)\s*:[^;]+;",
+    re.IGNORECASE,
+)
+
+
+def _clean_placeholder_text(html: str) -> str:
+    """Remove placeholder-specific content from raw_html before sending to VLM.
+
+    Two operations:
+    1. Clear direct text content from elements whose class contains 'placeholder'
+       (prevents model from reading labels like "Sidebar area (ads / widgets removed)").
+    2. Strip background-color and border CSS properties from placeholder CSS rules
+       (prevents model from reading exact placeholder fill/border colors from <style>).
+    Nested HTML child elements and non-placeholder CSS rules are preserved.
+    """
+    # Step 1: remove CSS background/border from placeholder class rules
+    def _strip_placeholder_css_props(m: re.Match) -> str:
+        body = _PLACEHOLDER_PROP_RE.sub("", m.group(2))
+        return m.group(1) + body + m.group(3)
+
+    html = _PLACEHOLDER_CSS_RULE_RE.sub(_strip_placeholder_css_props, html)
+
+    # Step 2: remove text content from placeholder elements
+    soup = BeautifulSoup(html, "html.parser")
+    for el in soup.find_all(class_=_PLACEHOLDER_CLASS_RE):
+        for text_node in el.find_all(string=True, recursive=False):
+            text_node.replace_with("")
+    return str(soup)
+
+
 # ── 调用接口 ──────────────────────────────────────────────────────────────────
 
 
@@ -123,7 +182,8 @@ def call_vlm(
     generation_params 直接透传，与 html_rewrite 流水线保持一致。
     调用失败时抛出异常，由调用方捕获并记录。
     """
-    user_text = _USER_TEMPLATE.format(outline_text=outline_text, raw_html=raw_html)
+    cleaned_html = _clean_placeholder_text(raw_html)
+    user_text = _USER_TEMPLATE.format(outline_text=outline_text, raw_html=cleaned_html)
     user_content = image_text_content(
         image_path=image_path,
         text=user_text,

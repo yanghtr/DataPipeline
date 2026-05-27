@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 def _none_str(val: object) -> str:
     return "None extracted" if not val else str(val)
@@ -68,6 +70,10 @@ def render_outline_text(outline: dict) -> str:
     for hint in ls.get("style_hints", []):
         layout_parts.append(hint)
     for c in ls.get("colors", []):
+        # Skip background colors for placeholder elements — they are training-data
+        # artifacts (not actual page colors) that the model would copy verbatim.
+        if "placeholder" in c.get("selector", "").lower():
+            continue
         hex_or_val = c.get("hex") or c.get("value", "")
         layout_parts.append(f'{c["selector"]}: {c["property"]} {hex_or_val}')
     for font in ls.get("fonts", [])[:3]:
@@ -84,8 +90,33 @@ def render_outline_text(outline: dict) -> str:
     svgs = assets.get("svg_elements", [])
     if svgs:
         asset_parts.append(f"{len(svgs)} SVG element(s)")
-    for vb in assets.get("visual_blocks", [])[:5]:
-        asset_parts.append(f'visual block: {vb.get("description","")} ({vb.get("selector","")[:30]})')
+    # Deduplicate visual_blocks by description, then prioritize placeholder elements
+    # so they are never cut off by the limit even when other blocks are numerous.
+    _vb_seen: set[str] = set()
+    _vb_placeholders: list[dict] = []
+    _vb_others: list[dict] = []
+    for vb in assets.get("visual_blocks", []):
+        key = vb.get("description", "")
+        if key in _vb_seen:
+            continue
+        _vb_seen.add(key)
+        if "placeholder" in vb.get("selector", "").lower():
+            _vb_placeholders.append(vb)
+        else:
+            _vb_others.append(vb)
+    for vb in (_vb_placeholders + _vb_others)[:8]:
+        sel = vb.get("selector", "")[:30]
+        desc = vb.get("description", "")
+        if "placeholder" in sel.lower():
+            # Strip background color — placeholder fill colors are training-data
+            # artifacts; expose only size/shape so the model uses layout properties.
+            desc = re.sub(r"\bbg #[0-9a-fA-F]{3,6}\b\s*", "", desc).strip()
+            asset_parts.append(
+                f'media region: {desc} ({sel})'
+                f' [placeholder — describe by visual role, size, and aspect ratio only]'
+            )
+        else:
+            asset_parts.append(f'visual block: {desc} ({sel})')
     css_bgs = assets.get("css_backgrounds", [])
     if css_bgs:
         asset_parts.append(f"{len(css_bgs)} CSS background(s)")
