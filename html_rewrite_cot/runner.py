@@ -119,6 +119,15 @@ def run(
         run_phase1(all_records, config)
 
     if phase in ("phase2", "all"):
+        # 单独跑 phase2 时 phase1 未执行，从 outline cache 加载数据
+        if phase == "phase2":
+            from html_rewrite_cot.models import load_outline_cache
+            cache_path = Path(config.runtime.run_dir) / "outlines.jsonl"
+            cached = load_outline_cache(cache_path)
+            for r in all_records:
+                if r.sample_id in cached:
+                    r.apply_outline_cache(cached[r.sample_id])
+            logger.info(f"[runner] 从 outline cache 加载 {len(cached)} 条记录")
         logger.info("--- 开始 Phase 2：VLM reasoning 生成 ---")
         run_phase2(all_records, config)
 

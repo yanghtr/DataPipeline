@@ -77,7 +77,8 @@ def check_quality(reasoning_text: str, raw_html: str) -> dict:
         ("sidebar", ["aside", "sidebar", "panel"]),
         ("footer", ["footer", "foot"]),
         ("table", ["<table", "<tr", "<th"]),
-        ("image", ["<img", "background-image", "svg"]),
+        # "image" omitted: reasoning always says "analyze the image" (screenshot),
+        # regardless of whether the HTML contains <img> — always false-positives.
     ]
     for keyword, html_evidence in checks:
         if keyword in reasoning_lower:

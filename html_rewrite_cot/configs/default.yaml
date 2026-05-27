@@ -5,8 +5,8 @@ input:
     # - /path/to/data_000001.jsonl
 
 output:
-  output_dir: ./outputs/cot
-  debug_dir: ./outputs/cot_debug   # null 则不输出 debug
+  output_dir: ./outputs/html_rewrite_cot
+  debug_dir: ./outputs/html_rewrite_cot/cot_debug   # null 则不输出 debug
 
 # VLM API 配置，字段与 html_rewrite 流水线对齐
 vlm:
@@ -18,9 +18,9 @@ vlm:
   ssl_verify: false
   log_user: html_rewrite_cot
   generation_params:
-    temperature: 0.7
-    top_p: 0.9
-    max_tokens: 2048
+    max_tokens: 32768   # reasoning 文本较长，给足空间；temperature/top_p 不填，使用平台默认值
+    # temperature: 0.7
+    # top_p: 0.9
     # stop: ["```html"]
     # 说明：只用 "```html" 作为 stop token。
     # 不要加 "<html" 或 "<!DOCTYPE html>"——它们会在模型分析 HTML 标签时误截断。
@@ -30,7 +30,7 @@ runtime:
   num_workers: 4
   playwright_concurrency: 2
   resume: true
-  run_dir: ./run
+  run_dir: ./outputs/html_rewrite_cot/run
 
 render:
   viewport_strategy: match_image   # match_image | user_config | fallback

@@ -138,7 +138,27 @@ def run_phase2(
     done_ids: set[str] = set()
     if config.runtime.resume:
         done_ids = load_done_ids(done_path)
-        logger.info(f"[phase2] 已完成 {len(done_ids)} 条（resume）")
+        # Also scan debug output files: if the process was killed between writing the
+        # panguml output and writing the done_id, the sample is in debug but not in done.txt.
+        # Scanning debug (which contains sample_id) makes resume fully idempotent.
+        if config.output.debug_dir:
+            import json as _json
+            for jsonl_file in by_file:
+                _, dbg_path = _make_output_paths(config, jsonl_file)
+                if dbg_path and dbg_path.exists():
+                    with open(dbg_path, "r", encoding="utf-8") as _f:
+                        for _line in _f:
+                            _line = _line.strip()
+                            if not _line:
+                                continue
+                            try:
+                                _d = _json.loads(_line)
+                                sid = _d.get("sample_id")
+                                if sid:
+                                    done_ids.add(sid)
+                            except Exception:
+                                pass
+        logger.info(f"[phase2] 已完成 {len(done_ids)} 条（resume，含 debug 扫描）")
 
     to_process: list[tuple[SampleRecord, Path, Path | None]] = []
     for jsonl_file, records in by_file.items():

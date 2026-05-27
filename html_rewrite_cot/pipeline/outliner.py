@@ -249,6 +249,8 @@ def _extract_structural_text(soup: BeautifulSoup) -> dict:
     for lst in soup.find_all(["ul", "ol"])[:6]:
         if _is_hidden(lst):
             continue
+        if lst.find_parent("nav"):  # already captured in navigation_links
+            continue
         items = [t(li) for li in lst.find_all("li", recursive=False) if t(li)][:5]
         if items:
             lists.append({"type": lst.name, "items": items})
@@ -479,13 +481,14 @@ def _parse_rendered(data: dict, viewport_w: int, viewport_h: int) -> dict:
         color_hex = el.get("colorHex")
         font = el.get("fontFamily", "")
 
-        # Layout hints
-        if "flex" in display:
+        # Layout hints — skip bare tag selectors (no class/id) to avoid noise like "a: flex row"
+        _has_qualifier = "." in sel or "#" in sel
+        if "flex" in display and _has_qualifier:
             if flex_dir in ("column", "column-reverse"):
                 layout_hints.append(f"{sel}: vertical flex column")
             else:
                 layout_hints.append(f"{sel}: horizontal flex row")
-        if "grid" in display and grid_cols:
+        if "grid" in display and grid_cols and _has_qualifier:
             col_count = len(grid_cols.split())
             layout_hints.append(f"{sel}: grid layout ({col_count} col-tracks)")
 
@@ -580,6 +583,9 @@ async def _playwright_extract(
         ctx = await browser.new_context(viewport={"width": width, "height": height})
         page = await ctx.new_page()
 
+        # playwright evaluate() 不接受 timeout 参数，用 set_default_timeout 统一控制
+        page.set_default_timeout(config.js_timeout_ms)
+
         if config.block_external:
             async def _block(route):
                 url = route.request.url
@@ -600,7 +606,7 @@ async def _playwright_extract(
         await asyncio.sleep(0.2)
 
         try:
-            raw = await page.evaluate(_PLAYWRIGHT_JS, timeout=config.js_timeout_ms)
+            raw = await page.evaluate(_PLAYWRIGHT_JS)
         except Exception as e:
             warnings.append(f"JS evaluate timeout/error: {e}")
             timed_out = True

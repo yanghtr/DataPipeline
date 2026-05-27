@@ -61,6 +61,12 @@ multi-column layout, cards, forms, tables, image placeholders, CSS-drawn blocks,
 centered containers when relevant.
    If a layout relationship is ambiguous, briefly state the final implementation choice.
 
+6. After the "Structure and Implementation Plan:" section, close with a single natural \
+transition sentence that bridges your analysis to the HTML output. Examples (vary the wording):
+   "I'll now write the complete self-contained HTML file with embedded CSS to match this layout."
+   "Now I'll implement the full page as a self-contained HTML file with embedded CSS."
+   Use your own natural phrasing — do not copy an example verbatim.
+
 Content requirements:
 - Focus on concrete visual and coding-relevant details.
 - Mention important visible components and text groups without copying long paragraph text.
