@@ -1,5 +1,7 @@
 import argparse
+import ast
 import base64
+import csv
 import html
 import io
 import os
@@ -7,6 +9,13 @@ import random
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Prompt/prediction columns in the optional TSV can be very large (embedded
+# base64 images, long HTML). Lift the csv field size limit accordingly.
+try:
+    csv.field_size_limit(2**31 - 1)
+except OverflowError:  # pragma: no cover
+    csv.field_size_limit(2**30)
 
 import gradio as gr
 
@@ -72,6 +81,39 @@ th, td {
   word-break: break-all;
   font-size: 12px;
   line-height: 1.45;
+}
+.cell-text .text-block {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fbfbfb;
+}
+.cell-text .text-block > summary {
+  cursor: pointer;
+  padding: 8px;
+  font-weight: 600;
+  user-select: none;
+}
+.cell-text .text-block .text-meta {
+  color: #888;
+  font-weight: 400;
+  font-size: 11px;
+}
+.cell-text .text-block pre {
+  margin: 0;
+  padding: 8px;
+  border-top: 1px solid #e8e8e8;
+  background: #fff;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 60vh;
+  overflow: auto;
+}
+.cell-text .text-missing {
+  color: #999;
+  font-style: italic;
+  padding: 4px;
 }
 .placeholder {
   border: 1px dashed #bbb;
@@ -189,6 +231,85 @@ def read_html_text(path: Optional[str]) -> str:
         return f"[error reading html: {exc}]"
 
 
+def normalize_tsv_path(raw_path: str) -> Tuple[Optional[str], Optional[str]]:
+    candidate = (raw_path or "").strip().strip('"').strip("'")
+    if not candidate:
+        return None, None
+    resolved = os.path.abspath(os.path.expanduser(candidate))
+    if not os.path.exists(resolved):
+        return None, f"tsv does not exist: {resolved}"
+    if not os.path.isfile(resolved):
+        return None, f"not a tsv file: {resolved}"
+    return resolved, None
+
+
+def _extract_prompt_text(raw: str) -> str:
+    """The prompt column holds a python-literal list of {type, value} dicts.
+
+    Join all text entries; fall back to the raw string if it cannot be parsed.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    try:
+        obj = ast.literal_eval(raw)
+    except (ValueError, SyntaxError, MemoryError):
+        return raw
+    items = obj if isinstance(obj, list) else [obj]
+    texts = [
+        str(e.get("value", ""))
+        for e in items
+        if isinstance(e, dict) and e.get("type") == "text"
+    ]
+    if texts:
+        return "\n\n".join(t for t in texts if t.strip())
+    return raw
+
+
+def _extract_cot(prediction: str) -> str:
+    """CoT is everything the model emitted before the HTML code block."""
+    pred = prediction or ""
+    fence = pred.find("```")
+    if fence != -1:
+        return pred[:fence].strip()
+    low = pred.lower()
+    for marker in ("<!doctype", "<html"):
+        idx = low.find(marker)
+        if idx != -1:
+            return pred[:idx].strip()
+    return pred.strip()
+
+
+@lru_cache(maxsize=32)
+def _parse_tsv_cached(path: str, mtime: float) -> Dict[str, Dict[str, str]]:
+    del mtime
+    result: Dict[str, Dict[str, str]] = {}
+    encodings = ("utf-8", "utf-8-sig", "gb18030", "latin-1")
+    for enc in encodings:
+        try:
+            with open(path, "r", encoding=enc, newline="") as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                for row in reader:
+                    img = (row.get("img_fname") or "").strip()
+                    if not img:
+                        continue
+                    stem = os.path.splitext(os.path.basename(img))[0]
+                    result[stem] = {
+                        "prompt": _extract_prompt_text(row.get("prompt") or ""),
+                        "cot": _extract_cot(row.get("prediction") or ""),
+                    }
+            return result
+        except UnicodeDecodeError:
+            result.clear()
+            continue
+    return result
+
+
+def read_tsv_records(path: str) -> Dict[str, Dict[str, str]]:
+    mtime = os.path.getmtime(path)
+    return _parse_tsv_cached(path, mtime)
+
+
 @lru_cache(maxsize=1024)
 def _load_image_data_uri(path: str, mtime: float) -> Tuple[str, str]:
     del mtime
@@ -226,6 +347,19 @@ def render_folder_list_markdown(folders: List[str]) -> str:
     return "\n".join(lines)
 
 
+def _render_collapsible(label: str, text: Optional[str], open_default: bool = False) -> str:
+    if not text:
+        return "<div class='text-missing'>(none)</div>"
+    char_count = len(text)
+    open_attr = " open" if open_default else ""
+    return (
+        f"<details class='text-block'{open_attr}>"
+        f"<summary>{html.escape(label)} <span class='text-meta'>({char_count} chars)</span></summary>"
+        f"<pre>{html.escape(text)}</pre>"
+        "</details>"
+    )
+
+
 def render_grid_html(
     folders: List[str],
     scans: Dict[str, FolderScan],
@@ -240,6 +374,12 @@ def render_grid_html(
     idx = clamp_index(index, len(basenames))
     base_name = basenames[idx]
 
+    # Only show prompt/CoT rows when at least one loaded folder carries a TSV.
+    show_cot = any(
+        any("cot" in rec or "prompt" in rec for rec in folder_data.values())
+        for folder_data in scans.values()
+    )
+
     header_cells = ["<th class='label-col'>row type</th>"]
     image_row_cells = [
         "<td class='label-col'>"
@@ -248,6 +388,8 @@ def render_grid_html(
         "</td>"
     ]
     html_row_cells = ["<td class='label-col'>HTML</td>"]
+    prompt_row_cells = ["<td class='label-col'>Prompt</td>"]
+    cot_row_cells = ["<td class='label-col'>CoT (reasoning)</td>"]
 
     for folder in folders:
         folder_name = Path(folder).name or folder
@@ -264,6 +406,8 @@ def render_grid_html(
         if not record:
             image_block = "<div class='placeholder'>missing png</div>"
             html_text = "missing"
+            prompt_text: Optional[str] = None
+            cot_text: Optional[str] = None
         else:
             img_uri, img_err = get_image_data_uri(record.get("png_path"))
             if img_uri:
@@ -275,6 +419,8 @@ def render_grid_html(
                     "</div>"
                 )
             html_text = read_html_text(record.get("html_path"))
+            prompt_text = record.get("prompt")
+            cot_text = record.get("cot")
 
         image_row_cells.append(
             "<td class='cell-image'>"
@@ -287,6 +433,24 @@ def render_grid_html(
             "</td>"
         )
 
+        if show_cot:
+            prompt_row_cells.append(
+                "<td class='cell-text'>" + _render_collapsible("Prompt", prompt_text) + "</td>"
+            )
+            cot_row_cells.append(
+                "<td class='cell-text'>"
+                + _render_collapsible("CoT", cot_text, open_default=True)
+                + "</td>"
+            )
+
+    body_rows = [
+        "<tr>" + "".join(image_row_cells) + "</tr>",
+    ]
+    if show_cot:
+        body_rows.append("<tr>" + "".join(prompt_row_cells) + "</tr>")
+        body_rows.append("<tr>" + "".join(cot_row_cells) + "</tr>")
+    body_rows.append("<tr>" + "".join(html_row_cells) + "</tr>")
+
     return (
         "<div class='table-wrap'>"
         "<table>"
@@ -294,13 +458,8 @@ def render_grid_html(
         + "".join(header_cells)
         + "</tr></thead>"
         "<tbody>"
-        "<tr>"
-        + "".join(image_row_cells)
-        + "</tr>"
-        "<tr>"
-        + "".join(html_row_cells)
-        + "</tr>"
-        "</tbody>"
+        + "".join(body_rows)
+        + "</tbody>"
         "</table>"
         "</div>"
     )
@@ -348,6 +507,7 @@ def build_response(
 
 def collect_folders_from_inputs(
     path_values: List[str],
+    tsv_values: List[str],
     active_rows: int,
 ) -> Tuple[List[str], Dict[str, FolderScan], List[str], str]:
     folders: List[str] = []
@@ -376,6 +536,36 @@ def collect_folders_from_inputs(
             errors.append(f"Row {i + 1}: scan failed: {exc}")
             continue
 
+        raw_tsv = tsv_values[i] if i < len(tsv_values) else ""
+        tsv_path, tsv_err = normalize_tsv_path(raw_tsv)
+        if tsv_err:
+            errors.append(f"Row {i + 1}: {tsv_err}")
+        elif tsv_path:
+            try:
+                tsv_records = read_tsv_records(tsv_path)
+            except Exception as exc:
+                errors.append(f"Row {i + 1}: tsv parse failed: {exc}")
+            else:
+                matched = 0
+                for stem, record in folder_scan.items():
+                    entry = tsv_records.get(stem)
+                    if entry:
+                        record["prompt"] = entry.get("prompt", "")
+                        record["cot"] = entry.get("cot", "")
+                        matched += 1
+                # Surface rows present only in the TSV (no png in folder).
+                for stem, entry in tsv_records.items():
+                    if stem not in folder_scan:
+                        folder_scan[stem] = {
+                            "png_path": None,
+                            "html_path": None,
+                            "prompt": entry.get("prompt", ""),
+                            "cot": entry.get("cot", ""),
+                        }
+                errors.append(
+                    f"Row {i + 1}: tsv matched {matched}/{len(tsv_records)} entries."
+                )
+
         seen.add(folder_key)
         folders.append(folder)
         scans[folder] = folder_scan
@@ -397,9 +587,17 @@ def collect_folders_from_inputs(
     return folders, scans, sampled_basenames, status
 
 
+def _split_path_values(values: Tuple[str, ...]) -> Tuple[List[str], List[str]]:
+    """Inputs are wired as [folder paths..., tsv paths...], each MAX_INPUT_ROWS long."""
+    folder_paths = list(values[:MAX_INPUT_ROWS])
+    tsv_paths = list(values[MAX_INPUT_ROWS : 2 * MAX_INPUT_ROWS])
+    return folder_paths, tsv_paths
+
+
 def on_confirm_paths(row_count: int, index: int, *path_values: str):
+    folder_paths, tsv_paths = _split_path_values(path_values)
     folders, scans, basenames, status = collect_folders_from_inputs(
-        list(path_values), int(row_count)
+        folder_paths, tsv_paths, int(row_count)
     )
     return build_response(folders, scans, basenames, index, status)
 
@@ -417,22 +615,32 @@ def on_plus_row(row_count: int):
 
 def on_minus_row(row_count: int, index: int, *path_values: str):
     current = int(row_count)
-    paths = list(path_values)
+    folder_paths, tsv_paths = _split_path_values(path_values)
     if current <= 1:
         new_count = 1
         status_prefix = "At least one input row must remain."
     else:
         new_count = current - 1
-        paths[current - 1] = ""
+        folder_paths[current - 1] = ""
+        tsv_paths[current - 1] = ""
         status_prefix = f"Removed row {current}."
 
     row_updates = [gr.update(visible=i < new_count) for i in range(MAX_INPUT_ROWS)]
-    input_updates = [gr.update(value=paths[i]) for i in range(MAX_INPUT_ROWS)]
+    folder_input_updates = [gr.update(value=folder_paths[i]) for i in range(MAX_INPUT_ROWS)]
+    tsv_input_updates = [gr.update(value=tsv_paths[i]) for i in range(MAX_INPUT_ROWS)]
 
-    folders, scans, basenames, scan_status = collect_folders_from_inputs(paths, new_count)
+    folders, scans, basenames, scan_status = collect_folders_from_inputs(
+        folder_paths, tsv_paths, new_count
+    )
     final_status = f"{status_prefix} {scan_status}".strip()
     main_updates = build_response(folders, scans, basenames, index, final_status)
-    return (new_count, *row_updates, *input_updates, *main_updates)
+    return (
+        new_count,
+        *row_updates,
+        *folder_input_updates,
+        *tsv_input_updates,
+        *main_updates,
+    )
 
 
 def on_prev(
@@ -525,14 +733,22 @@ with gr.Blocks(title="PNG HTML Aligned Viewer") as demo:
 
     folder_input_rows = []
     folder_inputs = []
+    tsv_inputs = []
     for i in range(MAX_INPUT_ROWS):
         with gr.Row(visible=(i == 0)) as row:
             text = gr.Textbox(
                 label=f"Set folder path {i + 1}",
                 placeholder=r"D:\path\to\set_folder",
+                scale=3,
+            )
+            tsv = gr.Textbox(
+                label=f"Optional CoT/prompt TSV {i + 1}",
+                placeholder=r"predictions only, e.g. D:\path\to\result.tsv (leave blank if none)",
+                scale=2,
             )
         folder_input_rows.append(row)
         folder_inputs.append(text)
+        tsv_inputs.append(tsv)
 
     with gr.Row():
         prev_btn = gr.Button("Prev", min_width=90)
@@ -579,18 +795,19 @@ with gr.Blocks(title="PNG HTML Aligned Viewer") as demo:
 
     minus_btn.click(
         fn=on_minus_row,
-        inputs=[row_count_state, index_state, *folder_inputs],
+        inputs=[row_count_state, index_state, *folder_inputs, *tsv_inputs],
         outputs=[
             row_count_state,
             *folder_input_rows,
             *folder_inputs,
+            *tsv_inputs,
             *common_outputs,
         ],
     )
 
     confirm_btn.click(
         fn=on_confirm_paths,
-        inputs=[row_count_state, index_state, *folder_inputs],
+        inputs=[row_count_state, index_state, *folder_inputs, *tsv_inputs],
         outputs=common_outputs,
     )
 
